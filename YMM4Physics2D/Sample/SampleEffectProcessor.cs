@@ -1,0 +1,157 @@
+﻿using System.Numerics;
+using Vortice.Direct2D1;
+using Vortice.Mathematics;
+using YMM4Physics2D.Core.Bodies;
+using YMM4Physics2D.Core.Colliders;
+using YMM4Physics2D.Core.Controllers;
+using YMM4Physics2D.Core.Core;
+using YukkuriMovieMaker.Commons;
+using YukkuriMovieMaker.Player.Video;
+
+namespace YMM4Physics2D.Sample
+{
+    internal class SampleEffectProcessor : IVideoEffectProcessor
+    {
+        private readonly IGraphicsDevicesAndContext devices;
+        private readonly SampleEffect item;
+        private ID2D1Image? input;
+        private ID2D1CommandList? _outputCommandList;
+
+        private RigidBodyController? _controller;
+
+        public ID2D1Image Output => _outputCommandList ?? input ?? throw new NullReferenceException(nameof(input) + " is null");
+
+        public SampleEffectProcessor(IGraphicsDevicesAndContext devices, SampleEffect item)
+        {
+            this.devices = devices;
+            this.item = item;
+        }
+
+        public DrawDescription Update(EffectDescription effectDescription)
+        {
+            var drawDesc = effectDescription.DrawDescription;
+            var currentZoom = drawDesc.Zoom;
+
+            var itemFrame = effectDescription.ItemPosition.Frame;
+            var timelineFrame = effectDescription.TimelinePosition.Frame;
+            var length = effectDescription.ItemDuration.Frame;
+            var fps = effectDescription.FPS;
+
+            var worldId = (int)item.WorldId;
+            var type = item.BodyType;
+            var mass = (float)item.Mass.GetValue(itemFrame, length, fps);
+            var restitution = (float)item.Restitution.GetValue(itemFrame, length, fps);
+            var friction = (float)item.Friction.GetValue(itemFrame, length, fps);
+            var linearDamping = (float)item.LinearDamping.GetValue(itemFrame, length, fps);
+            var angularDamping = (float)item.AngularDamping.GetValue(itemFrame, length, fps);
+            var simplifyTolerance = (float)item.SimplifyTolerance.GetValue(itemFrame, length, fps);
+            var isSeparate = item.IsSeparate;
+
+            var config = WorldSettings.WorldSettings.Default.Configs.FirstOrDefault(c => c.Id == worldId);
+            if (config != null) PhysicsManager.UpdateWorldSettings(worldId, config, effectDescription.ScreenSize);
+
+            if (_controller == null && input != null)
+            {
+                _controller = new RigidBodyController(
+                    worldId,
+                    config,
+                    new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y)
+                );
+            }
+
+            if (_controller == null) return drawDesc;
+
+            _controller.SetWorld(worldId, config);
+            _controller.UpdateBodyProperties(mass, restitution, friction, linearDamping, angularDamping);
+            _controller.SyncShape(devices.DeviceContext, input, currentZoom, simplifyTolerance: simplifyTolerance, separateParts: isSeparate);
+
+            _controller.Step(
+                timelineFrame,
+                itemFrame,
+                fps,
+                new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y),
+                (float)(drawDesc.Rotation.Z * Math.PI / 180.0),
+                type
+            );
+
+            _outputCommandList?.Dispose();
+            _outputCommandList = devices.DeviceContext.CreateCommandList();
+
+            using (var recorder = devices.D2D.Device.CreateDeviceContext(DeviceContextOptions.None))
+            {
+                recorder.Target = _outputCommandList;
+                recorder.BeginDraw();
+                recorder.Clear(null);
+
+                using (var imageBrush = recorder.CreateImageBrush(input, new ImageBrushProperties { ExtendModeX = ExtendMode.Clamp, ExtendModeY = ExtendMode.Clamp }))
+                using (var geometryFactory = devices.DeviceContext.Factory)
+                using (var debugBrush = recorder.CreateSolidColorBrush(new Color4(1f, 0f, 0f, 1f)))
+                {
+                    foreach (var body in _controller.Bodies)
+                    {
+                        Matrix3x2 bodyTransform = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
+
+                        foreach (var col in body.Colliders)
+                        {
+                            if (col is PolygonCollider poly)
+                            {
+                                using var pathGeometry = geometryFactory.CreatePathGeometry();
+                                using (var sink = pathGeometry.Open())
+                                {
+                                    var verts = poly.LocalVertices;
+                                    if (verts.Length > 0)
+                                    {
+                                        sink.BeginFigure(verts[0], FigureBegin.Filled);
+                                        for (int i = 1; i < verts.Length; i++)
+                                        {
+                                            sink.AddLine(verts[i]);
+                                        }
+                                        sink.EndFigure(FigureEnd.Closed);
+                                    }
+                                    sink.Close();
+                                }
+
+                                imageBrush.Transform = Matrix3x2.CreateTranslation(-body.VisualOffset);
+
+                                recorder.Transform = bodyTransform;
+                                recorder.FillGeometry(pathGeometry, debugBrush);
+                            }
+                        }
+                    }
+                }
+                recorder.EndDraw();
+            }
+            _outputCommandList.Close();
+
+            if (type == BodyType.Static || _controller.Bodies.Count == 0)
+            {
+                return drawDesc;
+            }
+
+            return drawDesc with
+            {
+                Draw = new Vector3(0, 0, drawDesc.Draw.Z),
+                Rotation = new Vector3(0, 0, 0)
+            };
+        }
+
+        public void SetInput(ID2D1Image? input)
+        {
+            this.input = input;
+        }
+
+        public void ClearInput()
+        {
+            input = null;
+        }
+
+        public void Dispose()
+        {
+            _controller?.Dispose();
+            _controller = null;
+
+            _outputCommandList?.Dispose();
+            _outputCommandList = null;
+        }
+    }
+}

@@ -1,0 +1,71 @@
+﻿<UserControl x:Class="YMM4Physics2D.Sample.WorldSettings.WorldSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:local="clr-namespace:YMM4Physics2D.Sample.WorldSettings"
+             xmlns:c="clr-namespace:YukkuriMovieMaker.Controls;assembly=YukkuriMovieMaker.Controls"
+             mc:Ignorable="d" 
+             d:DesignHeight="450" d:DesignWidth="800">
+    <StackPanel>
+        <Expander Header="基本設定" IsExpanded="True">
+            <StackPanel>
+                <Grid>
+                    <Label Content="ワールドID" VerticalAlignment="Center"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=WorldId}" StringFormat="F0" Unit="" Delta="1" DefaultValue="0" DefaultMax="5" Min="0" Max="100" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+                <Grid>
+                    <Label Content="重力（Y）" VerticalAlignment="Center"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=GravityY}" StringFormat="F1" Unit="m/s²" DefaultValue="9.8" DefaultMin="-10" DefaultMax="10" Min="-1000" Max="1000" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+                <Grid>
+                    <Label Content="画面サイズの壁" VerticalAlignment="Center"/>
+                    <c:ToggleSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=EnableWalls}" HorizontalAlignment="Right"/>
+                </Grid>
+            </StackPanel>
+        </Expander>
+
+        <Expander Header="精度・品質" IsExpanded="True">
+            <StackPanel>
+                <Grid>
+                    <Label Content="スナップショット間隔" VerticalAlignment="Center" ToolTip="履歴を保存する間隔（フレーム数）。&#x0a;小さいと巻き戻しが滑らかになりますが、メモリ消費が増えます。"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=SnapshotInterval}" StringFormat="F0" Unit="" Delta="1" DefaultValue="60" DefaultMin="1" DefaultMax="60" Min="1" Max="600" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+                <Grid>
+                    <Label Content="計算反復回数" VerticalAlignment="Center" ToolTip="1フレームあたりの衝突計算回数です。&#x0a;高いほど重なりが減り硬くなりますが、負荷が増えます。"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=Iterations}" StringFormat="F0" Unit="" Delta="1" DefaultValue="4" DefaultMin="1" DefaultMax="10" Min="1" Max="30" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+            </StackPanel>
+        </Expander>
+
+        <Expander Header="空気抵抗 (減衰)" IsExpanded="False">
+            <StackPanel>
+                <Grid>
+                    <Label Content="移動減衰" VerticalAlignment="Center" ToolTip="移動速度が自然に遅くなる割合"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=LinearDamping}" StringFormat="F2" Unit="" Delta="0.01" DefaultValue="0.05" DefaultMin="0" DefaultMax="0.1" Min="0" Max="10.0" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+                <Grid>
+                    <Label Content="回転減衰" VerticalAlignment="Center" ToolTip="回転が自然に止まる割合"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=AngularDamping}" StringFormat="F1" Unit="" DefaultValue="3.0" DefaultMin="0" DefaultMax="5.0" Min="0" Max="20.0" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+            </StackPanel>
+        </Expander>
+
+        <Expander Header="詳細設定 (挙動安定化)" IsExpanded="False">
+            <StackPanel>
+                <Grid>
+                    <Label Content="反発無効速度" VerticalAlignment="Center" ToolTip="これ以下の衝突速度では跳ね返りません。&#x0a;微振動を防ぐために使います。"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=MinVelocityForRestitution}" StringFormat="F1" Unit="m/s" DefaultValue="1.0" DefaultMin="0" DefaultMax="5.0" Min="0" Max="500" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+                <Grid>
+                    <Label Content="めり込み解消率" VerticalAlignment="Center" ToolTip="1フレームでめり込みを修正する割合。&#x0a;高いと震えやすくなります。"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=PositionCorrectionPercent}" StringFormat="F1" Unit="" DefaultValue="0.4" DefaultMin="0" DefaultMax="1.0" Min="0" Max="1.0" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+                <Grid>
+                    <Label Content="許容めり込み" VerticalAlignment="Center" ToolTip="修正を行わない微小なめり込み量。"/>
+                    <c:TextBoxSlider Value="{Binding Source={x:Static local:WorldSettings.Default},Path=PositionCorrectionSlop}" StringFormat="F2" Unit="px" Delta="0.01" DefaultValue="0.01" DefaultMin="0" DefaultMax="0.1" Min="0" Max="10.0" Width="200" HorizontalAlignment="Right"/>
+                </Grid>
+            </StackPanel>
+        </Expander>
+    </StackPanel>
+</UserControl>
