@@ -1,4 +1,6 @@
-﻿using System.Numerics;
+﻿using System.Linq;
+using System.Numerics;
+using Vortice;
 using Vortice.Direct2D1;
 using Vortice.Mathematics;
 using YMM4Physics2D.Core.Bodies;
@@ -83,42 +85,8 @@ namespace YMM4Physics2D.Sample
                 recorder.BeginDraw();
                 recorder.Clear(null);
 
-                using (var imageBrush = recorder.CreateImageBrush(input, new ImageBrushProperties { ExtendModeX = ExtendMode.Clamp, ExtendModeY = ExtendMode.Clamp }))
-                using (var geometryFactory = devices.DeviceContext.Factory)
-                using (var debugBrush = recorder.CreateSolidColorBrush(new Color4(1f, 0f, 0f, 1f)))
-                {
-                    foreach (var body in _controller.Bodies)
-                    {
-                        Matrix3x2 bodyTransform = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
+                _controller.Draw(recorder, input);
 
-                        foreach (var col in body.Colliders)
-                        {
-                            if (col is PolygonCollider poly)
-                            {
-                                using var pathGeometry = geometryFactory.CreatePathGeometry();
-                                using (var sink = pathGeometry.Open())
-                                {
-                                    var verts = poly.LocalVertices;
-                                    if (verts.Length > 0)
-                                    {
-                                        sink.BeginFigure(verts[0], FigureBegin.Filled);
-                                        for (int i = 1; i < verts.Length; i++)
-                                        {
-                                            sink.AddLine(verts[i]);
-                                        }
-                                        sink.EndFigure(FigureEnd.Closed);
-                                    }
-                                    sink.Close();
-                                }
-
-                                imageBrush.Transform = Matrix3x2.CreateTranslation(-body.VisualOffset);
-
-                                recorder.Transform = bodyTransform;
-                                recorder.FillGeometry(pathGeometry, debugBrush);
-                            }
-                        }
-                    }
-                }
                 recorder.EndDraw();
             }
             _outputCommandList.Close();

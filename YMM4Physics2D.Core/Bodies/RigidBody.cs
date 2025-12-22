@@ -5,6 +5,9 @@ namespace YMM4Physics2D.Core.Bodies
 {
     public class RigidBody
     {
+        private static int _nextId = 0;
+        public readonly int Id;
+
         private Vector2 _position;
         public Vector2 Position
         {
@@ -86,6 +89,8 @@ namespace YMM4Physics2D.Core.Bodies
 
         public RigidBody(Vector2 position, float mass, BodyType bodyType)
         {
+            Id = Interlocked.Increment(ref _nextId);
+
             _position = position;
             _type = bodyType;
             _mass = System.Math.Max(0f, mass);
@@ -114,6 +119,26 @@ namespace YMM4Physics2D.Core.Bodies
                 collider.SetBody(this);
                 _colliders.Add(collider);
                 collider.MarkDirty();
+                RecalculateMassData();
+            }
+        }
+
+        public void AddColliders(IEnumerable<Collider> colliders)
+        {
+            bool addedAny = false;
+            foreach (var collider in colliders)
+            {
+                if (collider != null && !_colliders.Contains(collider))
+                {
+                    collider.SetBody(this);
+                    _colliders.Add(collider);
+                    collider.MarkDirty();
+                    addedAny = true;
+                }
+            }
+
+            if (addedAny)
+            {
                 RecalculateMassData();
             }
         }

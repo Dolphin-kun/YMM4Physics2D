@@ -141,8 +141,6 @@ namespace YMM4Physics2D.Core.World
                 CreateWall(new Vector2(0, -screenSize.Height / 2), screenSize.Width, thickness);
                 CreateWall(new Vector2(screenSize.Width / 2, 0), thickness, screenSize.Height);
                 CreateWall(new Vector2(-screenSize.Width / 2, 0), thickness, screenSize.Height);
-
-                System.Diagnostics.Debug.WriteLine("Screate Wall");
             }
         }
 
@@ -250,14 +248,15 @@ namespace YMM4Physics2D.Core.World
                 {
                     var snap = _snapshots[i];
 
-                    if (snap.BodyStates.Length != _bodies.Count) continue;
-
                     CurrentFrame = snap.Frame;
 
-                    for (int k = 0; k < snap.BodyStates.Length; k++)
+                    foreach (var body in _bodies)
                     {
-                        snap.BodyStates[k].ApplyTo(_bodies[k]);
-                        foreach (var col in _bodies[k].Colliders) col.RecomputeAABB();
+                        if (snap.BodyStates.TryGetValue(body.Id, out var state))
+                        {
+                            state.ApplyTo(body);
+                            foreach (var col in body.Colliders) col.RecomputeAABB();
+                        }
                     }
 
                     return true;

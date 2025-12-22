@@ -6,7 +6,7 @@ namespace YMM4Physics2D.Core.Collision
 {
     public static class CollisionResolver
     {
-        public static void Resolve(Manifold m, float minVelocity, float correctionPercent, float slop)
+        public static void Resolve(in Manifold m, float minVelocity, float correctionPercent, float slop)
         {
             RigidBody bodyA = m.BodyA;
             RigidBody bodyB = m.BodyB;

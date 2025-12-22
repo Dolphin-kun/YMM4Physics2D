@@ -27,15 +27,16 @@ namespace YMM4Physics2D.Core.Core
         public class WorldState
         {
             public int Frame;
-            public BodyState[] BodyStates;
+            public Dictionary<int, BodyState> BodyStates;
 
             public WorldState(int frame, List<RigidBody> bodies)
             {
                 Frame = frame;
-                BodyStates = new BodyState[bodies.Count];
-                for (int i = 0; i < bodies.Count; i++)
+                BodyStates = new Dictionary<int, BodyState>(bodies.Count);
+
+                foreach (var body in bodies)
                 {
-                    BodyStates[i] = new BodyState(bodies[i]);
+                    BodyStates[body.Id] = new BodyState(body);
                 }
             }
         }

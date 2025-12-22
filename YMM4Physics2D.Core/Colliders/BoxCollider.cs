@@ -4,11 +4,29 @@ namespace YMM4Physics2D.Core.Colliders
 {
     public class BoxCollider : Collider
     {
-        public float Width { get; set; }
-        public float Height { get; set; }
+        public float Width { get; private set; }
+        public float Height { get; private set; }
 
-        private bool _isDirty = true;
         private readonly Vector2[] _worldVertices = new Vector2[4];
+        private readonly Vector2[] _worldAxes = new Vector2[2];
+
+        public Vector2[] WorldVertices
+        {
+            get
+            {
+                if (IsDirty) UpdateCache();
+                return _worldVertices;
+            }
+        }
+
+        public Vector2[] WorldAxes
+        {
+            get
+            {
+                if (IsDirty) UpdateCache();
+                return _worldAxes;
+            }
+        }
 
         public BoxCollider(float width, float height)
         {
@@ -24,46 +42,20 @@ namespace YMM4Physics2D.Core.Colliders
             MarkDirty();
         }
 
-        public Vector2[] WorldVertices
-        {
-            get
-            {
-                if (_isDirty) UpdateCache();
-                return _worldVertices;
-            }
-        }
-
-        public override void MarkDirty()
-        {
-            _isDirty = true;
-        }
-
         public override void RecomputeAABB()
         {
-            if (_worldVertices == null || _worldVertices.Length == 0)
+            Vector2 v0 = _worldVertices[0];
+            Vector2 min = v0;
+            Vector2 max = v0;
+
+            for (int i = 1; i < 4; i++)
             {
-                WorldAABB = new AABB { Min = Vector2.Zero, Max = Vector2.Zero };
-                return;
+                Vector2 v = _worldVertices[i];
+                min = Vector2.Min(min, v);
+                max = Vector2.Max(max, v);
             }
 
-            float minX = float.MaxValue;
-            float minY = float.MaxValue;
-            float maxX = float.MinValue;
-            float maxY = float.MinValue;
-
-            foreach (var v in _worldVertices)
-            {
-                if (v.X < minX) minX = v.X;
-                if (v.Y < minY) minY = v.Y;
-                if (v.X > maxX) maxX = v.X;
-                if (v.Y > maxY) maxY = v.Y;
-            }
-
-            WorldAABB = new AABB
-            {
-                Min = new Vector2(minX, minY),
-                Max = new Vector2(maxX, maxY)
-            };
+            WorldAABB = new AABB(min, max);
         }
 
         public override float CalculateArea()
@@ -80,8 +72,15 @@ namespace YMM4Physics2D.Core.Colliders
         {
             if (Body == null)
             {
+                float hw = Width / 2f;
+                float hh = Height / 2f;
+                _worldVertices[0] = Offset + new Vector2(-hw, -hh);
+                _worldVertices[1] = Offset + new Vector2(hw, -hh);
+                _worldVertices[2] = Offset + new Vector2(hw, hh);
+                _worldVertices[3] = Offset + new Vector2(-hw, hh);
+
                 RecomputeAABB();
-                _isDirty = false;
+                IsDirty = false;
                 return;
             }
 
@@ -91,25 +90,19 @@ namespace YMM4Physics2D.Core.Colliders
             Matrix3x2 transform = Matrix3x2.CreateRotation(rotation);
             transform.Translation = position;
 
+            _worldAxes[0] = Vector2.Normalize(new Vector2(transform.M11, transform.M12));
+            _worldAxes[1] = Vector2.Normalize(new Vector2(transform.M21, transform.M22));
+
             float halfWidth = Width / 2f;
             float halfHeight = Height / 2f;
-            Vector2[] localVertices =
-            [
-                new Vector2(-halfWidth, -halfHeight),
-                new Vector2(halfWidth, -halfHeight),
-                new Vector2(halfWidth, halfHeight),
-                new Vector2(-halfWidth, halfHeight)
-            ];
 
-            for (int i = 0; i < 4; i++)
-            {
-                Vector2 vertexWithOffset = localVertices[i] + Offset;
-                _worldVertices[i] = Vector2.Transform(vertexWithOffset, transform);
-            }
+            _worldVertices[0] = Vector2.Transform(new Vector2(-halfWidth, -halfHeight) + Offset, transform);
+            _worldVertices[1] = Vector2.Transform(new Vector2(halfWidth, -halfHeight) + Offset, transform);
+            _worldVertices[2] = Vector2.Transform(new Vector2(halfWidth, halfHeight) + Offset, transform);
+            _worldVertices[3] = Vector2.Transform(new Vector2(-halfWidth, halfHeight) + Offset, transform);
 
             RecomputeAABB();
-
-            _isDirty = false;
+            IsDirty = false;
         }
     }
 }

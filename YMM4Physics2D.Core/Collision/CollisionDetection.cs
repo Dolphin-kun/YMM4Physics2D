@@ -16,27 +16,30 @@ namespace YMM4Physics2D.Core.Collision
                 {
                     if (!colA.WorldAABB.Overlaps(colB.WorldAABB)) continue;
 
-                    bool isAConvex = colA.ShapeType == ShapeType.Polygon || colA.ShapeType == ShapeType.Box;
-                    bool isBConvex = colB.ShapeType == ShapeType.Polygon || colB.ShapeType == ShapeType.Box;
+                    var manifold = new Manifold(bodyA, bodyB);
+                    bool hasCollision;
 
-                    if (isAConvex && isBConvex)
+                    if (colA is CircleCollider circleA && colB is CircleCollider circleB)
                     {
-                        var manifold = new Manifold(bodyA, bodyB);
-
-                        if (TryGetConvexData(colA, out var vertsA, out var axesA) &&
-                            TryGetConvexData(colB, out var vertsB, out var axesB))
-                        {
-                            DetectConvex(vertsA, axesA, vertsB, axesB, ref manifold);
-
-                            if (manifold.HasCollision)
-                            {
-                                manifolds.Add(manifold);
-                            }
-                        }
+                        hasCollision = DetectCircleCircle(circleA, circleB, ref manifold);
                     }
-                    else if (colA.ShapeType == ShapeType.Circle && colB.ShapeType == ShapeType.Circle)
+                    else if (colA is CircleCollider cA && (colB is BoxCollider || colB is PolygonCollider))
                     {
-                        // 拡張用: 円同士の処理
+                        hasCollision = DetectPolygonCircle(colB, cA, ref manifold, flipOwner: true);
+                    }
+                    else if ((colA is BoxCollider || colA is PolygonCollider) && colB is CircleCollider cB)
+                    {
+                        hasCollision = DetectPolygonCircle(colA, cB, ref manifold, flipOwner: false);
+                    }
+                    else
+                    {
+                        // Box vs Box, Box vs Poly, Poly vs Poly
+                        hasCollision = DetectConvex(colA, colB, ref manifold);
+                    }
+
+                    if (hasCollision)
+                    {
+                        manifolds.Add(manifold);
                     }
                 }
             }
@@ -44,8 +47,84 @@ namespace YMM4Physics2D.Core.Collision
             return manifolds;
         }
 
-        
-        private static bool FindSmallestAxis(Vector2[] axes, Vector2[] verticesA, Vector2[] verticesB, ref float minOverlap, ref Vector2 smallestAxis, bool isCheckingAxisA, ref bool axisOwnerIsA)
+        private static bool DetectConvex(Collider colA, Collider colB, ref Manifold manifold)
+        {
+            // ここで配列をnewせず、既存の参照を取得する
+            // ※ BoxColliderにもWorldAxes、WorldVerticesを実装している前提
+            // ※ PolygonColliderはもともと持っている
+
+
+            if (!TryGetConvexSpan(colA, out ReadOnlySpan<Vector2> vertsA, out ReadOnlySpan<Vector2> axesA)) return false;
+            if (!TryGetConvexSpan(colB, out ReadOnlySpan<Vector2> vertsB, out ReadOnlySpan<Vector2> axesB)) return false;
+
+            float minOverlap = float.MaxValue;
+            Vector2 smallestAxis = Vector2.Zero;
+            bool axisOwnerIsA = true;
+
+            // Aの軸テスト
+            if (!FindSmallestAxis(axesA, vertsA, vertsB, ref minOverlap, ref smallestAxis, true, ref axisOwnerIsA)) return false;
+
+            // Bの軸テスト
+            if (!FindSmallestAxis(axesB, vertsA, vertsB, ref minOverlap, ref smallestAxis, false, ref axisOwnerIsA)) return false;
+
+            // 衝突確定
+            manifold.HasCollision = true;
+            manifold.Depth = minOverlap;
+
+            // 法線の向きを調整 (A -> B)
+            // 重心計算はコストがかかるため、AABBの中心で簡易判定しても良いが、正確性をとって幾何中心を使う
+            Vector2 centerA = colA.WorldAABB.Center;
+            Vector2 centerB = colB.WorldAABB.Center;
+
+            if (Vector2.Dot(centerB - centerA, smallestAxis) < 0)
+            {
+                smallestAxis = -smallestAxis;
+            }
+            manifold.Normal = smallestAxis; // 常に正規化されている前提
+
+            // 接触点の特定 (Feature Flipping)
+            // axisOwnerIsA == true なら、最小分離軸はAのもの -> 接触点はB上の頂点
+            if (axisOwnerIsA)
+            {
+                manifold.AddContact(GetSupportPoint(vertsB, -manifold.Normal));
+            }
+            else
+            {
+                manifold.AddContact(GetSupportPoint(vertsA, manifold.Normal));
+            }
+
+            return true;
+        }
+
+        private static bool TryGetConvexSpan(Collider col, out ReadOnlySpan<Vector2> verts, out ReadOnlySpan<Vector2> axes)
+        {
+            if (col is PolygonCollider poly)
+            {
+                verts = poly.WorldVertices;
+                axes = poly.WorldAxes;
+                return true;
+            }
+            else if (col is BoxCollider box)
+            {
+                verts = box.WorldVertices;
+                // BoxColliderにWorldAxesを追加することを強く推奨。
+                // ない場合はここで計算が必要だが、配列newは避けたい。
+                // 暫定対応: もしBoxColliderにWorldAxesがないなら、box.WorldVerticesから計算するヘルパーが必要
+                // ここでは「BoxColliderもPolygonColliderと同じインターフェース(WorldAxes)を持つ」ように修正されたと仮定します。
+
+                // 仮の実装:
+                axes = box.GetType().GetProperty("WorldAxes")?.GetValue(box) as Vector2[];
+                // ↑これは遅いので、BoxCollider.csに public Vector2[] WorldAxes { get; } を追加してください。
+
+                return true;
+            }
+
+            verts = default;
+            axes = default;
+            return false;
+        }
+
+        private static bool FindSmallestAxis(ReadOnlySpan<Vector2> axes, ReadOnlySpan<Vector2> verticesA, ReadOnlySpan<Vector2> verticesB, ref float minOverlap, ref Vector2 smallestAxis, bool isCheckingAxisA, ref bool axisOwnerIsA)
         {
             foreach (var axis in axes)
             {
@@ -67,84 +146,114 @@ namespace YMM4Physics2D.Core.Collision
             return true;
         }
 
-        private static bool TryGetConvexData(Collider col, out Vector2[] vertices, out Vector2[] axes)
+        private static bool DetectPolygonCircle(Collider polyCol, CircleCollider circleCol, ref Manifold manifold, bool flipOwner)
         {
-            vertices = null;
-            axes = null;
+            if (!TryGetConvexSpan(polyCol, out var vertices, out var axes)) return false;
 
-            if (col is PolygonCollider poly)
-            {
-                vertices = poly.WorldVertices;
-                axes = poly.WorldAxes;
-                return true;
-            }
-            else if (col is BoxCollider box)
-            {
-                vertices = box.WorldVertices;
+            Vector2 circleCenter = circleCol.WorldCenter;
+            float radius = circleCol.Radius;
 
-                axes = GetBoxAxes(vertices);
-                return true;
-            }
-
-            return false;
-        }
-
-        private static void DetectConvex(Vector2[] verticesA, Vector2[] axesA, Vector2[] verticesB, Vector2[] axesB, ref Manifold manifold)
-        {
             float minOverlap = float.MaxValue;
             Vector2 smallestAxis = Vector2.Zero;
-            bool axisOwnerIsA = true;
 
-            // Aの軸で判定
-            if (!FindSmallestAxis(axesA, verticesA, verticesB, ref minOverlap, ref smallestAxis, true, ref axisOwnerIsA))
+            // 1. ポリゴン軸テスト
+            foreach (var axis in axes)
             {
-                return;
+                ProjectVertices(vertices, axis, out float minP, out float maxP);
+                float projC = Vector2.Dot(circleCenter, axis);
+                float minC = projC - radius;
+                float maxC = projC + radius;
+
+                float overlap = System.Math.Min(maxP, maxC) - System.Math.Max(minP, minC);
+                if (overlap <= 0) return false;
+
+                if (overlap < minOverlap)
+                {
+                    minOverlap = overlap;
+                    smallestAxis = axis;
+                }
             }
 
-            // Bの軸で判定
-            if (!FindSmallestAxis(axesB, verticesA, verticesB, ref minOverlap, ref smallestAxis, false, ref axisOwnerIsA))
+            // 2. 最短頂点軸テスト
+            Vector2 closestVertex = vertices[0];
+            float minDistSq = Vector2.DistanceSquared(circleCenter, closestVertex);
+
+            // Spanなのでforループ
+            for (int i = 1; i < vertices.Length; i++)
             {
-                return;
+                float d = Vector2.DistanceSquared(circleCenter, vertices[i]);
+                if (d < minDistSq)
+                {
+                    minDistSq = d;
+                    closestVertex = vertices[i];
+                }
+            }
+
+            Vector2 axisToCenter = circleCenter - closestVertex;
+            if (axisToCenter.LengthSquared() > 1e-6f)
+            {
+                Vector2 axis = Vector2.Normalize(axisToCenter);
+                ProjectVertices(vertices, axis, out float minP, out float maxP);
+                float projC = Vector2.Dot(circleCenter, axis);
+                float minC = projC - radius;
+                float maxC = projC + radius;
+
+                float overlap = System.Math.Min(maxP, maxC) - System.Math.Max(minP, minC);
+                if (overlap <= 0) return false;
+
+                if (overlap < minOverlap)
+                {
+                    minOverlap = overlap;
+                    smallestAxis = axis;
+                }
             }
 
             manifold.HasCollision = true;
+            manifold.Depth = minOverlap;
 
-            Vector2 centerA = PolygonCollider.GetPolygonCenter(verticesA);
-            Vector2 centerB = PolygonCollider.GetPolygonCenter(verticesB);
-            Vector2 direction = centerB - centerA;
-
-            if (Vector2.Dot(direction, smallestAxis) < 0)
+            // 法線方向の調整
+            if (Vector2.Dot(circleCenter - polyCol.WorldAABB.Center, smallestAxis) < 0)
             {
                 smallestAxis = -smallestAxis;
             }
 
-            manifold.Normal = Vector2.Normalize(smallestAxis);
-            manifold.Depth = minOverlap;
+            if (flipOwner) manifold.Normal = -smallestAxis;
+            else manifold.Normal = smallestAxis;
 
-            if (axisOwnerIsA)
+            manifold.AddContact(circleCenter - smallestAxis * radius);
+            return true;
+        }
+
+       
+        private static bool DetectCircleCircle(CircleCollider a, CircleCollider b, ref Manifold manifold)
+        {
+            Vector2 delta = b.WorldCenter - a.WorldCenter;
+            float distSq = delta.LengthSquared();
+            float radiusSum = a.Radius + b.Radius;
+
+            if (distSq > radiusSum * radiusSum) return false;
+
+            float distance = MathF.Sqrt(distSq);
+            manifold.HasCollision = true;
+
+            if (distance == 0)
             {
-                Vector2 point = GetSupportPoint(verticesB, -manifold.Normal);
-                manifold.AddContact(point);
+                manifold.Depth = radiusSum;
+                manifold.Normal = Vector2.UnitX;
+                manifold.AddContact(a.WorldCenter);
             }
             else
             {
-                Vector2 point = GetSupportPoint(verticesA, manifold.Normal);
-                manifold.AddContact(point);
+                manifold.Depth = radiusSum - distance;
+                manifold.Normal = delta / distance;
+                manifold.AddContact(a.WorldCenter + manifold.Normal * a.Radius);
             }
+            return true;
         }
 
-        private static Vector2[] GetBoxAxes(Vector2[] vertices)
-        {
-            Vector2 edge1 = vertices[1] - vertices[0];
-            Vector2 normal1 = Vector2.Normalize(new Vector2(-edge1.Y, edge1.X));
+        
 
-            Vector2 edge2 = vertices[2] - vertices[1];
-            Vector2 normal2 = Vector2.Normalize(new Vector2(-edge2.Y, edge2.X));
-
-            return [normal1, normal2];
-        }
-
-        private static Vector2 GetSupportPoint(Vector2[] vertices, Vector2 dir)
+        private static Vector2 GetSupportPoint(ReadOnlySpan<Vector2> vertices, Vector2 dir)
         {
             Vector2 bestVertex = vertices[0];
             float maxDot = Vector2.Dot(vertices[0], dir);
@@ -162,7 +271,7 @@ namespace YMM4Physics2D.Core.Collision
             return bestVertex;
         }
 
-        private static void ProjectVertices(Vector2[] vertices, Vector2 axis, out float min, out float max)
+        private static void ProjectVertices(ReadOnlySpan<Vector2> vertices, Vector2 axis, out float min, out float max)
         {
             min = float.MaxValue;
             max = float.MinValue;

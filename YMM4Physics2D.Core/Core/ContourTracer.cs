@@ -1,44 +1,53 @@
-﻿using System.Numerics;
+﻿using System.Buffers;
+using System.Numerics;
+using YMM4Physics2D.Core.Math;
 
 namespace YMM4Physics2D.Core.Core
 {
     public static class ContourTracer
     {
+        private static readonly ArrayPool<bool> _visitedPool = ArrayPool<bool>.Shared;
+        private static readonly ArrayPool<sbyte> _historyPool = ArrayPool<sbyte>.Shared;
+
         public static unsafe List<List<Vector2>> TraceAllContours(IntPtr dataPointer, int pitch, int width, int height, byte threshold)
         {
             List<List<Vector2>> allContours = [];
             byte* scan0 = (byte*)dataPointer;
 
-            bool[] globalVisited = new bool[width * height];
+            int length = width * height;
+            bool[] globalVisited = _visitedPool.Rent(length);
+            Array.Clear(globalVisited, 0, length);
 
-            for (int y = 0; y < height; y++)
+            try
             {
-                byte* row = scan0 + (y * pitch);
-                for (int x = 0; x < width; x++)
+
+                for (int y = 0; y < height; y++)
                 {
-                    int index = y * width + x;
-
-                    if (!globalVisited[index] && row[x * 4 + 3] > threshold)
+                    byte* row = scan0 + (y * pitch);
+                    for (int x = 0; x < width; x++)
                     {
-                        List<Vector2> contour = TraceFromPoint(scan0, pitch, width, height, threshold, x, y, globalVisited);
+                        int index = y * width + x;
 
-                        if (contour.Count >= 3)
+                        if (!globalVisited[index] && row[x * 4 + 3] > threshold)
                         {
-                            float area = 0;
-                            for (int i = 0; i < contour.Count; i++)
-                            {
-                                Vector2 p1 = contour[i];
-                                Vector2 p2 = contour[(i + 1) % contour.Count];
-                                area += (p1.X * p2.Y) - (p2.X * p1.Y);
-                            }
+                            List<Vector2> contour = TraceFromPoint(scan0, pitch, width, height, threshold, x, y, globalVisited);
 
-                            if (System.Math.Abs(area * 0.5f) > 2.0f)
+                            if (contour.Count >= 3)
                             {
-                                allContours.Add(contour);
+                                float area = GeometryUtils.CalculateArea(contour);
+
+                                if (area > 2.0f)
+                                {
+                                    allContours.Add(contour);
+                                }
                             }
                         }
                     }
                 }
+            }
+            finally
+            {
+                _visitedPool.Return(globalVisited);
             }
 
             return allContours;
@@ -47,71 +56,76 @@ namespace YMM4Physics2D.Core.Core
         private static unsafe List<Vector2> TraceFromPoint(byte* scan0, int pitch, int width, int height, byte threshold, int startX, int startY, bool[] globalVisited)
         {
             List<Vector2> points = [];
-            Dictionary<int, int> localHistory = [];
+            int length = width * height;
+            sbyte[] localHistory = _historyPool.Rent(length);
+            new Span<sbyte>(localHistory, 0, length).Fill(-1);
 
-            int[] dx = [0, 1, 1, 1, 0, -1, -1, -1];
-            int[] dy = [-1, -1, 0, 1, 1, 1, 0, -1];
-
-            int x = startX;
-            int y = startY;
-            int backtrack = 4;
-
-            points.Add(new Vector2(x, y));
-            globalVisited[y * width + x] = true;
-            localHistory[y * width + x] = backtrack;
-
-            int maxSteps = width * height;
-            int steps = 0;
-
-            while (steps < maxSteps)
+            try
             {
-                bool foundNext = false;
+                int[] dx = [0, 1, 1, 1, 0, -1, -1, -1];
+                int[] dy = [-1, -1, 0, 1, 1, 1, 0, -1];
 
-                for (int i = 0; i < 8; i++)
+                int x = startX;
+                int y = startY;
+                int backtrack = 4;
+
+                points.Add(new Vector2(x, y));
+                globalVisited[y * width + x] = true;
+                localHistory[y * width + x] = (sbyte)backtrack;
+
+                int steps = 0;
+                while (steps < length)
                 {
-                    int idx = (backtrack + i) % 8;
-                    int nx = x + dx[idx];
-                    int ny = y + dy[idx];
+                    bool foundNext = false;
 
-                    if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                    for (int i = 0; i < 8; i++)
                     {
-                        byte* row = scan0 + (ny * pitch);
-                        byte alpha = row[nx * 4 + 3];
+                        int idx = (backtrack + i) % 8;
+                        int nx = x + dx[idx];
+                        int ny = y + dy[idx];
 
-                        if (alpha > threshold)
+                        if (nx >= 0 && nx < width && ny >= 0 && ny < height)
                         {
-                            if (nx == startX && ny == startY)
-                            {
-                                return points;
-                            }
+                            byte* row = scan0 + (ny * pitch);
+                            byte alpha = row[nx * 4 + 3];
 
-                            int key = ny * width + nx;
-                            int nextBacktrack = (idx + 5) % 8;
-
-                            if (localHistory.TryGetValue(key, out int prevBacktrack))
+                            if (alpha > threshold)
                             {
+                                if (nx == startX && ny == startY)
+                                {
+                                    return points;
+                                }
+
+                                int key = ny * width + nx;
+                                int nextBacktrack = (idx + 5) % 8;
+
+                                int prevBacktrack = localHistory[key];
                                 if (prevBacktrack == nextBacktrack)
                                 {
                                     return points;
                                 }
+
+                                x = nx;
+                                y = ny;
+                                points.Add(new Vector2(x, y));
+
+                                globalVisited[key] = true;
+                                localHistory[key] = (sbyte)nextBacktrack;
+                                backtrack = nextBacktrack;
+
+                                foundNext = true;
+                                break;
                             }
-
-                            x = nx;
-                            y = ny;
-                            points.Add(new Vector2(x, y));
-
-                            globalVisited[y * width + x] = true;
-                            localHistory[key] = nextBacktrack;
-                            backtrack = nextBacktrack;
-
-                            foundNext = true;
-                            break;
                         }
                     }
-                }
 
-                if (!foundNext) break;
-                steps++;
+                    if (!foundNext) break;
+                    steps++;
+                }
+            }
+            finally
+            {
+                _historyPool.Return(localHistory);
             }
 
             return points;
@@ -138,9 +152,24 @@ namespace YMM4Physics2D.Core.Core
             float maxDist = 0;
             int index = 0;
 
+            Vector2 pFirst = points[first];
+            Vector2 pLast = points[last];
+
+            float lineLenSq = Vector2.DistanceSquared(pFirst, pLast);
+            bool isPoint = lineLenSq < 1e-6f;
+
             for (int i = first + 1; i < last; i++)
             {
-                float dist = PerpendicularDistance(points[i], points[first], points[last]);
+                float dist;
+                if (isPoint)
+                {
+                    dist = Vector2.Distance(points[i], pFirst);
+                }
+                else
+                {
+                    dist = GetPerpendicularDistance(points[i], pFirst, pLast);
+                }
+
                 if (dist > maxDist)
                 {
                     maxDist = dist;
@@ -163,11 +192,11 @@ namespace YMM4Physics2D.Core.Core
             }
         }
 
-        private static float PerpendicularDistance(Vector2 p, Vector2 lineStart, Vector2 lineEnd)
+        private static float GetPerpendicularDistance(Vector2 p, Vector2 a, Vector2 b)
         {
-            float area = System.Math.Abs(0.5f * (lineStart.X * lineEnd.Y + lineEnd.X * p.Y + p.X * lineStart.Y - lineEnd.X * lineStart.Y - p.X * lineEnd.Y - lineStart.X * p.Y));
-            float bottom = Vector2.Distance(lineStart, lineEnd);
-            return (bottom == 0) ? Vector2.Distance(p, lineStart) : (area / bottom * 2.0f);
+            float area = MathF.Abs((b.X - a.X) * (a.Y - p.Y) - (a.X - p.X) * (b.Y - a.Y));
+            float bottom = Vector2.Distance(a, b);
+            return area / bottom;
         }
     }
 }

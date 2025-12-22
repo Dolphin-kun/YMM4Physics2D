@@ -38,16 +38,10 @@ namespace YMM4Physics2D.Core.Core
                 {
                     world.RemoveBody(bodyToRemove);
 
-                    _userCounts[worldId]--;
-
-                    /*
-                    if (_userCounts[worldId] <= 0)
+                    if (_userCounts.TryGetValue(worldId, out int value))
                     {
-                        world.Clear();
-                        _worlds.Remove(worldId);
-                        _userCounts.Remove(worldId);
-                        _lastFrameCounts.Remove(worldId);
-                    }*/
+                        _userCounts[worldId] = --value;
+                    }
                 }
             }
         }

@@ -5,6 +5,8 @@ namespace YMM4Physics2D.Core.Colliders
 {
     public abstract class Collider
     {
+        protected bool IsDirty { get; set; } = true;
+
         public ShapeType ShapeType { get; protected set; }
         public RigidBody? Body { get; protected set; }
         public Vector2 Offset { get; set; } = Vector2.Zero;
@@ -16,14 +18,11 @@ namespace YMM4Physics2D.Core.Colliders
 
         public virtual void MarkDirty()
         {
+            IsDirty = true;
         }
 
         public virtual void SetBody(RigidBody body)
         {
-            if (Body != null && Body != body)
-            {
-            }
-
             Body = body;
         }
     }

@@ -1,5 +1,5 @@
 ﻿using System.Numerics;
-using System.Windows.Shapes;
+using System.Runtime.InteropServices;
 using Vortice.DCommon;
 using Vortice.Direct2D1;
 using Vortice.DXGI;
@@ -18,23 +18,9 @@ namespace YMM4Physics2D.Core.Colliders
             public ContourNode(List<Vector2> contour) => Contour = contour;
         }
 
-        public static List<Vector2[]> GetVerticesFromImage(ID2D1DeviceContext context, ID2D1Image inputImage, Vector2 offset, Vector2 scale, byte alphaThreshold = 20, float simplifyTolerance = 1.5f)
+        public static async Task<List<List<Vector2[]>>> GetVerticesFromImageAsync(ID2D1DeviceContext context, ID2D1Image inputImage, Vector2 offset, Vector2 scale, byte alphaThreshold = 20, float simplifyTolerance = 1.5f)
         {
             if (scale == Vector2.Zero) scale = Vector2.One;
-
-            List<List<Vector2>> polygons = GeneratePolygonsInternal(
-                context,
-                inputImage,
-                offset,
-                scale,
-                alphaThreshold,
-                simplifyTolerance);
-
-            return [.. polygons.Select(p => p.ToArray())];
-        }
-
-        public static List<List<Vector2>> GeneratePolygonsInternal(ID2D1DeviceContext context, ID2D1Image inputImage, Vector2 offset, Vector2 scale, byte alphaThreshold = 20, float simplifyTolerance = 1.5f)
-        {
             if (inputImage == null) return [];
 
             context.GetDpi(out float dpiX, out float dpiY);
@@ -52,11 +38,11 @@ namespace YMM4Physics2D.Core.Colliders
             );
 
             var rect = context.GetImageLocalBounds(inputImage);
-            var width = rect.Right - rect.Left;
-            var height = rect.Bottom - rect.Top;
+            int width = (int)(rect.Right - rect.Left);
+            int height = (int)(rect.Bottom - rect.Top);
 
-            using ID2D1Bitmap1 stagingBitmap = context.CreateBitmap(new SizeI((int)width, (int)height), IntPtr.Zero, 0, stagingProps);
-            using ID2D1Bitmap1 targetBitmap = context.CreateBitmap(new SizeI((int)width, (int)height), IntPtr.Zero, 0, targetProps);
+            using ID2D1Bitmap1 stagingBitmap = context.CreateBitmap(new SizeI(width, height), IntPtr.Zero, 0, stagingProps);
+            using ID2D1Bitmap1 targetBitmap = context.CreateBitmap(new SizeI(width, height), IntPtr.Zero, 0, targetProps);
 
             var oldTarget = context.Target;
             context.Target = targetBitmap;
@@ -69,53 +55,75 @@ namespace YMM4Physics2D.Core.Colliders
             stagingBitmap.CopyFromBitmap(targetBitmap);
             var map = stagingBitmap.Map(MapOptions.Read);
 
-            List<List<Vector2>> allContours;
+            byte[] pixelData;
+            int pitch = map.Pitch;
+
             try
             {
-                allContours = ContourTracer.TraceAllContours(map.Bits, map.Pitch, (int)width, (int)height, alphaThreshold);
+                int totalBytes = pitch * height;
+                pixelData = new byte[totalBytes];
+                Marshal.Copy(map.Bits, pixelData, 0, totalBytes);
             }
             finally
             {
                 stagingBitmap.Unmap();
             }
 
-            if (allContours == null || allContours.Count == 0) return [];
-
-            var nodes = allContours
-                .Select(c => ContourTracer.SimplifyContour(c, simplifyTolerance))
-                .Where(c => c.Count >= 3 && System.Math.Abs(CalculateArea(c)) >= 10.0f)
-                .OrderByDescending(c => System.Math.Abs(CalculateArea(c)))
-                .Select(c => new ContourNode(c))
-                .ToList();
-
-            if (nodes.Count == 0) return [];
-
-            List<ContourNode> roots = [];
-            foreach (var node in nodes)
+            return await Task.Run(() =>
             {
-                bool addedToParent = false;
-                for (int i = nodes.IndexOf(node) - 1; i >= 0; i--)
+                List<List<Vector2>> allContours;
+                unsafe
                 {
-                    if (IsPolygonInside(node.Contour, nodes[i].Contour))
+                    fixed (byte* ptr = pixelData)
                     {
-                        nodes[i].Children.Add(node);
-                        addedToParent = true;
-                        break;
+                        allContours = ContourTracer.TraceAllContours((IntPtr)ptr, pitch, width, height, alphaThreshold);
                     }
                 }
-                if (!addedToParent)
+
+                if (allContours == null || allContours.Count == 0) return [];
+
+                var nodes = allContours
+                    .Select(c => ContourTracer.SimplifyContour(c, simplifyTolerance))
+                    .Where(c => c.Count >= 3 && System.Math.Abs(GeometryUtils.CalculateArea(c)) >= 10.0f)
+                    .OrderByDescending(c => System.Math.Abs(GeometryUtils.CalculateArea(c)))
+                    .Select(c => new ContourNode(c))
+                    .ToList();
+
+                if (nodes.Count == 0) return [];
+
+                List<ContourNode> roots = [];
+                foreach (var node in nodes)
                 {
-                    roots.Add(node);
+                    bool addedToParent = false;
+                    for (int i = nodes.IndexOf(node) - 1; i >= 0; i--)
+                    {
+                        if (IsPolygonInside(node.Contour, nodes[i].Contour))
+                        {
+                            nodes[i].Children.Add(node);
+                            addedToParent = true;
+                            break;
+                        }
+                    }
+                    if (!addedToParent)
+                    {
+                        roots.Add(node);
+                    }
                 }
-            }
 
-            List<List<Vector2>> resultPolygons = [];
-            foreach (var root in roots)
-            {
-                ProcessNode(root, offset, scale, resultPolygons, isHole: false);
-            }
+                List<List<Vector2[]>> groupedPolygons = [];
+                foreach (var root in roots)
+                {
+                    List<List<Vector2>> currentShapeParts = [];
+                    ProcessNode(root, offset, scale, currentShapeParts, isHole: false);
 
-            return resultPolygons;
+                    if (currentShapeParts.Count > 0)
+                    {
+                        groupedPolygons.Add([.. currentShapeParts.Select(p => p.ToArray())]);
+                    }
+                }
+
+                return groupedPolygons;
+            });
         }
 
         private static void ProcessNode(ContourNode node, Vector2 offset, Vector2 scale, List<List<Vector2>> polygons, bool isHole)
@@ -131,10 +139,10 @@ namespace YMM4Physics2D.Core.Colliders
 
             var holes = node.Children.Select(c => c.Contour).ToList();
 
-            if (!IsCounterClockwise(node.Contour)) node.Contour.Reverse();
+            if (!GeometryUtils.IsCounterClockwise(node.Contour)) node.Contour.Reverse();
             foreach (var h in holes)
             {
-                if (IsCounterClockwise(h)) h.Reverse();
+                if (GeometryUtils.IsCounterClockwise(h)) h.Reverse();
             }
 
             List<List<Vector2>> decomposed;
@@ -163,7 +171,7 @@ namespace YMM4Physics2D.Core.Colliders
             {
                 foreach (var grandChild in childHole.Children)
                 {
-                    ProcessNode(grandChild, offset,scale, polygons, false);
+                    ProcessNode(grandChild, offset, scale, polygons, false);
                 }
             }
         }
@@ -175,91 +183,54 @@ namespace YMM4Physics2D.Core.Colliders
                 return PolygonTools.DecomposeConcave(outer);
             }
 
-            var combined = new List<Vector2>(outer);
+            var combined = new List<Vector2>(outer.Count + holes.Sum(h => h.Count) + holes.Count * 2);
+            combined.AddRange(outer);
 
             foreach (var hole in holes)
             {
                 int bridgeOuterIdx = 0;
                 int bridgeHoleIdx = 0;
-                float minDist = float.MaxValue;
+                float minSqrDist = float.MaxValue;
 
                 for (int i = 0; i < combined.Count; i++)
                 {
+                    Vector2 p1 = combined[i];
                     for (int j = 0; j < hole.Count; j++)
                     {
-                        float dist = Vector2.Distance(combined[i], hole[j]);
-                        if (dist < minDist)
+                        Vector2 p2 = hole[j];
+                        float sqrDist = Vector2.DistanceSquared(p1, p2);
+
+                        if (sqrDist < minSqrDist)
                         {
-                            minDist = dist;
+                            minSqrDist = sqrDist;
                             bridgeOuterIdx = i;
                             bridgeHoleIdx = j;
                         }
                     }
                 }
 
-                var bridgedPoly = new List<Vector2>();
+                if (bridgeOuterIdx == -1) continue;
 
-                for (int i = 0; i <= bridgeOuterIdx; i++)
-                {
-                    bridgedPoly.Add(combined[i]);
-                }
+                var holeVertsToInsert = new List<Vector2>(hole.Count + 2);
 
                 for (int i = 0; i < hole.Count; i++)
                 {
-                    int idx = (bridgeHoleIdx + i) % hole.Count;
-                    bridgedPoly.Add(hole[idx]);
-                }
-                bridgedPoly.Add(hole[bridgeHoleIdx]);
-                bridgedPoly.Add(combined[bridgeOuterIdx]);
-
-                for (int i = bridgeOuterIdx + 1; i < combined.Count; i++)
-                {
-                    bridgedPoly.Add(combined[i]);
+                    holeVertsToInsert.Add(hole[(bridgeHoleIdx + i) % hole.Count]);
                 }
 
-                combined = bridgedPoly;
+                holeVertsToInsert.Add(hole[bridgeHoleIdx]);
+                holeVertsToInsert.Add(combined[bridgeOuterIdx]);
+
+                combined.InsertRange(bridgeOuterIdx + 1, holeVertsToInsert);
             }
 
             return PolygonTools.DecomposeConcave(combined);
         }
 
-        private static bool IsPointInPolygon(Vector2 point, List<Vector2> polygon)
-        {
-            bool inside = false;
-            for (int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++)
-            {
-                if (((polygon[i].Y > point.Y) != (polygon[j].Y > point.Y)) &&
-                    (point.X < (polygon[j].X - polygon[i].X) * (point.Y - polygon[i].Y) / (polygon[j].Y - polygon[i].Y) + polygon[i].X))
-                {
-                    inside = !inside;
-                }
-            }
-            return inside;
-        }
-
         private static bool IsPolygonInside(List<Vector2> inner, List<Vector2> outer)
         {
             if (inner.Count == 0) return false;
-            return IsPointInPolygon(inner[0], outer);
-        }
-
-        private static bool IsCounterClockwise(List<Vector2> points)
-        {
-            return CalculateArea(points) > 0;
-        }
-
-        private static float CalculateArea(List<Vector2> points)
-        {
-            if (points.Count < 3) return 0;
-
-            float area = 0;
-            for (int i = 0; i < points.Count; i++)
-            {
-                Vector2 p1 = points[i];
-                Vector2 p2 = points[(i + 1) % points.Count];
-                area += (p1.X * p2.Y) - (p2.X * p1.Y);
-            }
-            return area / 2.0f;
+            return GeometryUtils.IsPointInPolygon(inner[0], outer);
         }
     }
 }

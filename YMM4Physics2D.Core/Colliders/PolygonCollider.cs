@@ -1,16 +1,15 @@
 ﻿using System.Numerics;
+using YMM4Physics2D.Core.Math;
 
 namespace YMM4Physics2D.Core.Colliders
 {
     public class PolygonCollider : Collider
     {
-        private bool _isDirty = true;
-
         public Vector2[] WorldVertices
         {
             get
             {
-                if (_isDirty) UpdateCache();
+                if (IsDirty) UpdateCache();
                 return _worldVertices;
             }
         }
@@ -19,7 +18,7 @@ namespace YMM4Physics2D.Core.Colliders
         {
             get
             {
-                if (_isDirty) UpdateCache();
+                if (IsDirty) UpdateCache();
                 return _worldNormals;
             }
         }
@@ -42,7 +41,7 @@ namespace YMM4Physics2D.Core.Colliders
 
             if (autoCenter)
             {
-                Vector2 centroid = CalculateCentroid(vertices);
+                Vector2 centroid = GeometryUtils.CalculateCentroid(vertices);
 
                 LocalVertices = new Vector2[vertices.Length];
                 for (int i = 0; i < vertices.Length; i++)
@@ -55,7 +54,7 @@ namespace YMM4Physics2D.Core.Colliders
                 LocalVertices = (Vector2[])vertices.Clone();
             }
 
-            if (CalculateSignedArea(LocalVertices) < 0)
+            if (GeometryUtils.CalculateSignedArea(LocalVertices) < 0)
             {
                 Array.Reverse(LocalVertices);
             }
@@ -83,7 +82,7 @@ namespace YMM4Physics2D.Core.Colliders
             {
                 Array.Copy(LocalVertices, _worldVertices, LocalVertices.Length);
                 Array.Copy(_localNormals, _worldNormals, _localNormals.Length);
-                _isDirty = false;
+                IsDirty = false;
                 return;
             }
 
@@ -106,12 +105,12 @@ namespace YMM4Physics2D.Core.Colliders
                 _worldNormals[i] = Vector2.Transform(_localNormals[i], rotationMatrix);
             }
 
-            _isDirty = false;
+            IsDirty = false;
         }
 
         public override void RecomputeAABB()
         {
-            if (_isDirty) UpdateCache();
+            if (IsDirty) UpdateCache();
 
             if (_worldVertices.Length == 0)
             {
@@ -135,14 +134,9 @@ namespace YMM4Physics2D.Core.Colliders
             WorldAABB = new AABB(new Vector2(minX, minY), new Vector2(maxX, maxY));
         }
 
-        public override void MarkDirty()
-        {
-            _isDirty = true;
-        }
-
         public override float CalculateArea()
         {
-            return MathF.Abs(CalculateSignedArea(LocalVertices));
+            return MathF.Abs(GeometryUtils.CalculateSignedArea(LocalVertices));
         }
 
         public override float CalculateInertia(float mass)
@@ -186,49 +180,8 @@ namespace YMM4Physics2D.Core.Colliders
             return new PolygonCollider(vertices, autoCenter: false);
         }
 
-        public static Vector2 GetPolygonCenter(Vector2[] vertices)
-        {
-            Vector2 center = Vector2.Zero;
+        
 
-            for (int i = 0; i < vertices.Length; i++)
-            {
-                center += vertices[i];
-            }
-
-            return center / vertices.Length;
-        }
-
-        private static Vector2 CalculateCentroid(Vector2[] vs)
-        {
-            Vector2 c = Vector2.Zero;
-            float area = 0f;
-            float inv3 = 1.0f / 3.0f;
-
-            for (int i = 0; i < vs.Length; i++)
-            {
-                Vector2 p1 = vs[i];
-                Vector2 p2 = vs[(i + 1) % vs.Length];
-
-                float d = p1.X * p2.Y - p1.Y * p2.X;
-
-                float triangleArea = 0.5f * d;
-                area += triangleArea;
-
-                c += (p1 + p2) * inv3 * triangleArea;
-            }
-
-            return MathF.Abs(area) > 1e-6f ? c / area : Vector2.Zero;
-        }
-
-        private static float CalculateSignedArea(Vector2[] v)
-        {
-            float area = 0f;
-            for (int i = 0; i < v.Length; i++)
-            {
-                int j = (i + 1) % v.Length;
-                area += (v[i].X * v[j].Y - v[j].X * v[i].Y);
-            }
-            return area * 0.5f;
-        }
+        
     }
 }
