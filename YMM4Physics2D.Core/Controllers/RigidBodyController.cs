@@ -13,7 +13,6 @@ namespace YMM4Physics2D.Core.Controllers
     {
         private readonly List<RigidBody> _bodies = [];
         public IReadOnlyList<RigidBody> Bodies => _bodies;
-        private readonly Lock _bodiesLock = new();
 
         private int _worldId = -1;
         private bool _isInitialized = false;
@@ -29,8 +28,6 @@ namespace YMM4Physics2D.Core.Controllers
 
         private float _currentMass = 20.0f;
         private BodyType _currentBodyType;
-
-        private bool _isRebuilding = false;
 
         public RigidBodyController(int worldId, WorldConfig? config, Vector2 position)
         {
@@ -48,21 +45,19 @@ namespace YMM4Physics2D.Core.Controllers
             _currentDrawRotation = targetRot;
             _currentBodyType = type;
 
-            lock (_bodiesLock)
+            foreach (var body in _bodies)
             {
-                foreach (var body in _bodies)
+                body.StartFrame = timelineFrame - itemFrame;
+
+                if (body.Type != type)
                 {
-                    body.StartFrame = timelineFrame - itemFrame;
-                    if (body.Type != type) body.Type = type;
+                    body.Type = type;
                 }
             }
 
             if (!_isInitialized || itemFrame == 0)
             {
-                lock (_bodiesLock)
-                {
-                    foreach (var body in _bodies) body.OnReset?.Invoke();
-                }
+                foreach (var body in _bodies) body.OnReset?.Invoke();
 
                 PhysicsManager.StepWorld(_worldId, timelineFrame, fps);
                 _isInitialized = true;
@@ -82,25 +77,23 @@ namespace YMM4Physics2D.Core.Controllers
 
             PhysicsManager.Atomic(_worldId, (world) =>
             {
-                lock (_bodiesLock)
+                float massPerBody = (_bodies.Count > 0) ? mass / _bodies.Count : mass;
+
+                foreach (var body in _bodies)
                 {
-                    float massPerBody = (_bodies.Count > 0) ? mass / _bodies.Count : mass;
-                    foreach (var body in _bodies)
-                    {
-                        body.Mass = massPerBody;
-                        body.Restitution = restitution;
-                        body.Friction = friction;
-                        body.LinearDamping = linearDamping;
-                        body.AngularDamping = angularDamping;
-                    }
+                    body.Mass = massPerBody;
+
+                    body.Restitution = restitution;
+                    body.Friction = friction;
+                    body.LinearDamping = linearDamping;
+                    body.AngularDamping = angularDamping;
                 }
             });
         }
 
-        public async void SyncShape(ID2D1DeviceContext context, ID2D1Image? input, Vector2 zoom, byte alphaThreshold = 20, bool separateParts = false, float simplifyTolerance = 1.5f)
+        public void SyncShape(ID2D1DeviceContext context, ID2D1Image? input, Vector2 zoom, byte alphaThreshold = 20, bool separateParts = false, float simplifyTolerance = 1.5f)
         {
             if (_disposed || input == null) return;
-            if (_isRebuilding) return;
 
             bool isInputChanged = (input != _lastInput);
             bool isZoomChanged = (zoom != _lastZoom);
@@ -109,165 +102,163 @@ namespace YMM4Physics2D.Core.Controllers
 
             if (isInputChanged || isZoomChanged || isToleranceChanged || isSeparateChanged || _bodies.Count == 0)
             {
-                try
-                {
-                    _isRebuilding = true;
-                    await RebuildBodies(context, input, zoom, simplifyTolerance, alphaThreshold, separateParts);
+                RebuildBodies(context, input, zoom, simplifyTolerance, alphaThreshold, separateParts);
 
-                    _lastInput = input;
-                    _lastZoom = zoom;
-                    _lastSimplifyTolerance = simplifyTolerance;
-                    _lastSeparateParts = separateParts;
-                }
-                finally
-                {
-                    _isRebuilding = false;
-                }
-
+                _lastInput = input;
+                _lastZoom = zoom;
+                _lastSimplifyTolerance = simplifyTolerance;
+                _lastSeparateParts = separateParts;
             }
         }
 
         public void Draw(ID2D1DeviceContext target, ID2D1Image image)
         {
-            lock (_bodiesLock)
+            if (_bodies.Count == 0 || image == null) return;
+
+            var bounds = target.GetImageLocalBounds(image);
+            var topLeft = new Vector2(bounds.Left, bounds.Top);
+
+            using var factory = target.Factory;
+
+            foreach (var body in _bodies)
             {
-                if (_bodies.Count == 0 || image == null) return;
+                Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
 
-                var bounds = target.GetImageLocalBounds(image);
-                var topLeft = new Vector2(bounds.Left, bounds.Top);
+                Vector2 textureShift = -(body.VisualOffset + topLeft);
+                Matrix3x2 textureMatrix = Matrix3x2.CreateTranslation(textureShift) * worldMatrix;
 
-                using var factory = target.Factory;
-
-                foreach (var body in _bodies)
+                if (!_lastSeparateParts)
                 {
-                    Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
+                    target.Transform = textureMatrix;
+                    target.DrawImage(image);
+                }
+                else
+                {
+                    using var pathGeometry = factory.CreatePathGeometry();
+                    using var sink = pathGeometry.Open();
+                    bool hasFigure = false;
 
-                    Vector2 textureShift = -(body.VisualOffset + topLeft);
-                    Matrix3x2 textureMatrix = Matrix3x2.CreateTranslation(textureShift) * worldMatrix;
-
-                    if (!_lastSeparateParts)
+                    foreach (var col in body.Colliders)
                     {
-                        target.Transform = textureMatrix;
-                        target.DrawImage(image);
-                    }
-                    else
-                    {
-                        using var pathGeometry = factory.CreatePathGeometry();
-                        using var sink = pathGeometry.Open();
-                        bool hasFigure = false;
-
-                        foreach (var col in body.Colliders)
+                        if (col is PolygonCollider poly && poly.LocalVertices.Length > 0)
                         {
-                            if (col is PolygonCollider poly && poly.LocalVertices.Length > 0)
+                            sink.BeginFigure(poly.LocalVertices[0], FigureBegin.Filled);
+                            for (int i = 1; i < poly.LocalVertices.Length; i++)
                             {
-                                sink.BeginFigure(poly.LocalVertices[0], FigureBegin.Filled);
-                                for (int i = 1; i < poly.LocalVertices.Length; i++)
-                                {
-                                    sink.AddLine(poly.LocalVertices[i]);
-                                }
-                                sink.EndFigure(FigureEnd.Closed);
-                                hasFigure = true;
+                                sink.AddLine(poly.LocalVertices[i]);
                             }
-                            else if (col is CircleCollider circle)
-                            {
-                                Vector2 center = circle.Offset;
-                                float r = circle.Radius;
-
-                                Vector2 start = new(center.X + r, center.Y);
-                                Vector2 end = new(center.X - r, center.Y);
-
-                                sink.BeginFigure(start, FigureBegin.Filled);
-                                sink.AddArc(new ArcSegment(end, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
-                                sink.AddArc(new ArcSegment(start, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
-                                sink.EndFigure(FigureEnd.Closed);
-                                hasFigure = true;
-                            }
+                            sink.EndFigure(FigureEnd.Closed);
+                            hasFigure = true;
                         }
-                        sink.Close();
-
-                        if (!hasFigure) continue;
-
-                        var layerParameters = new LayerParameters1
+                        else if (col is CircleCollider circle)
                         {
-                            ContentBounds = new RawRectF(-10000, -10000, 20000, 20000),
-                            GeometricMask = pathGeometry,
-                            MaskTransform = Matrix3x2.Identity,
-                            Opacity = 1f
-                        };
+                            Vector2 center = circle.Offset; // CircleColliderのローカル中心
+                            float r = circle.Radius;
 
-                        target.Transform = worldMatrix;
+                            Vector2 start = new Vector2(center.X + r, center.Y);
+                            Vector2 end = new Vector2(center.X - r, center.Y);
 
-                        using var layer = target.CreateLayer(null);
-                        target.PushLayer(layerParameters, layer);
-
-                        target.Transform = textureMatrix;
-                        target.DrawImage(image);
-
-                        target.PopLayer();
+                            sink.BeginFigure(start, FigureBegin.Filled);
+                            sink.AddArc(new ArcSegment(end, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
+                            sink.AddArc(new ArcSegment(start, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
+                            sink.EndFigure(FigureEnd.Closed);
+                            hasFigure = true;
+                        }
                     }
+                    sink.Close();
+
+                    if (!hasFigure) continue;
+
+                    var layerParameters = new LayerParameters1
+                    {
+                        ContentBounds = new RawRectF(-10000, -10000, 20000, 20000),
+                        GeometricMask = pathGeometry,
+                        MaskTransform = Matrix3x2.Identity,
+                        Opacity = 1f
+                    };
+
+                    target.Transform = worldMatrix;
+
+                    using var layer = target.CreateLayer(null);
+                    target.PushLayer(layerParameters, layer);
+
+                    target.Transform = textureMatrix;
+                    target.DrawImage(image);
+
+                    target.PopLayer();
                 }
             }
         }
 
-        private async Task RebuildBodies(ID2D1DeviceContext context, ID2D1Image input, Vector2 zoom, float simplifyTolerance, byte alphaThreshold, bool separateParts)
+        private void RebuildBodies(ID2D1DeviceContext context, ID2D1Image input, Vector2 zoom, float simplifyTolerance, byte alphaThreshold, bool separateParts)
         {
             var rect = context.GetImageLocalBounds(input);
             var topLeft = new Vector2(rect.Left, rect.Top);
 
-            var partsVertices = await ColliderGenerator.GetVerticesFromImageAsync(
-                context,
-                input,
-                topLeft,
-                zoom,
-                alphaThreshold,
-                simplifyTolerance
-            );
-
-            lock (_bodiesLock)
+            PhysicsManager.Atomic(_worldId, (world) =>
             {
-                PhysicsManager.Atomic(_worldId, async (world) =>
+                foreach (var oldBody in _bodies)
                 {
-                    foreach (var oldBody in _bodies)
+                    PhysicsManager.LeaveWorld(_worldId, oldBody);
+                    world.RemoveBody(oldBody);
+                }
+                _bodies.Clear();
+
+                var partsVertices = ColliderGenerator.GetVerticesFromImage(
+                    context,
+                    input,
+                    topLeft,
+                    zoom,
+                    alphaThreshold,
+                    simplifyTolerance
+                );
+
+                var newBodies = BodyFactory.CreateBodies(
+                    partsVertices,
+                    Vector2.Zero,
+                    _currentMass,
+                    separateParts,
+                    _currentBodyType
+                );
+
+                foreach (var body in newBodies)
+                {
+                    Vector2 localCenter = body.VisualOffset + topLeft;
+                    Vector2 worldOffset = Vector2.Transform(localCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
+
+                    body.Position = _currentDrawPosition + worldOffset;
+                    body.Rotation = _currentDrawRotation;
+
+                    /*
+                    foreach (var col in body.Colliders)
                     {
-                        PhysicsManager.LeaveWorld(_worldId, oldBody);
-                        world.RemoveBody(oldBody);
-                    }
-                    _bodies.Clear();
-
-                    var newBodies = BodyFactory.CreateBodies(
-                        partsVertices,
-                        Vector2.Zero,
-                        _currentMass,
-                        separateParts,
-                        _currentBodyType
-                    );
-
-                    foreach (var body in newBodies)
-                    {
-                        Vector2 localCenter = body.VisualOffset + topLeft;
-                        Vector2 worldOffset = Vector2.Transform(localCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
-
-                        body.Position = _currentDrawPosition + worldOffset;
-                        body.Rotation = _currentDrawRotation;
-
-                        body.OnReset = () =>
+                        if (col is PolygonCollider poly)
                         {
-                            Vector2 currentLocalCenter = body.VisualOffset + topLeft;
-                            Vector2 currentWorldOffset = Vector2.Transform(currentLocalCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
-
-                            body.Position = _currentDrawPosition + currentWorldOffset;
-                            body.Rotation = _currentDrawRotation;
-                            body.LinearVelocity = Vector2.Zero;
-                            body.AngularVelocity = 0f;
-                            body.ClearForces();
-                        };
-
-                        _bodies.Add(body);
-                        PhysicsManager.JoinWorld(_worldId, new WorldConfig { Id = _worldId });
-                        world.AddBody(body);
+                            var verts = poly.LocalVertices;
+                            for (int i = 0; i < verts.Length; i++)
+                            {
+                                verts[i] += shift;
+                            }
+                        }
                     }
-                });
-            }
+                    */
+                    body.OnReset = () =>
+                    {
+                        Vector2 currentLocalCenter = body.VisualOffset + topLeft;
+                        Vector2 currentWorldOffset = Vector2.Transform(currentLocalCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
+
+                        body.Position = _currentDrawPosition + currentWorldOffset;
+                        body.Rotation = _currentDrawRotation;
+                        body.LinearVelocity = Vector2.Zero;
+                        body.AngularVelocity = 0f;
+                        body.ClearForces();
+                    };
+
+                    _bodies.Add(body);
+                    PhysicsManager.JoinWorld(_worldId, new WorldConfig { Id = _worldId });
+                    world.AddBody(body);
+                }
+            });
         }
 
         public void SetWorld(int worldId, WorldConfig? config)
