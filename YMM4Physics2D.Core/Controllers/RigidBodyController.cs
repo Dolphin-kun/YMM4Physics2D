@@ -1,4 +1,5 @@
-﻿using System.Numerics;
+﻿using System.Diagnostics;
+using System.Numerics;
 using Vortice;
 using Vortice.Direct2D1;
 using Vortice.Mathematics;
@@ -152,7 +153,7 @@ namespace YMM4Physics2D.Core.Controllers
                         }
                         else if (col is CircleCollider circle)
                         {
-                            Vector2 center = circle.Offset; // CircleColliderのローカル中心
+                            Vector2 center = circle.Offset;
                             float r = circle.Radius;
 
                             Vector2 start = new Vector2(center.X + r, center.Y);
@@ -197,13 +198,14 @@ namespace YMM4Physics2D.Core.Controllers
 
             PhysicsManager.Atomic(_worldId, (world) =>
             {
+                var sw = Stopwatch.StartNew();
                 foreach (var oldBody in _bodies)
                 {
                     PhysicsManager.LeaveWorld(_worldId, oldBody);
                     world.RemoveBody(oldBody);
                 }
                 _bodies.Clear();
-
+                
                 var partsVertices = ColliderGenerator.GetVerticesFromImage(
                     context,
                     input,
@@ -229,19 +231,6 @@ namespace YMM4Physics2D.Core.Controllers
                     body.Position = _currentDrawPosition + worldOffset;
                     body.Rotation = _currentDrawRotation;
 
-                    /*
-                    foreach (var col in body.Colliders)
-                    {
-                        if (col is PolygonCollider poly)
-                        {
-                            var verts = poly.LocalVertices;
-                            for (int i = 0; i < verts.Length; i++)
-                            {
-                                verts[i] += shift;
-                            }
-                        }
-                    }
-                    */
                     body.OnReset = () =>
                     {
                         Vector2 currentLocalCenter = body.VisualOffset + topLeft;

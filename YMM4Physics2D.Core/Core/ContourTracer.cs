@@ -7,7 +7,9 @@ namespace YMM4Physics2D.Core.Core
     public static class ContourTracer
     {
         private static readonly ArrayPool<bool> _visitedPool = ArrayPool<bool>.Shared;
-        private static readonly ArrayPool<sbyte> _historyPool = ArrayPool<sbyte>.Shared;
+
+        private static readonly int[] dx = [0, 1, 1, 1, 0, -1, -1, -1];
+        private static readonly int[] dy = [-1, -1, 0, 1, 1, 1, 0, -1];
 
         public static unsafe List<List<Vector2>> TraceAllContours(IntPtr dataPointer, int pitch, int width, int height, byte threshold)
         {
@@ -24,23 +26,30 @@ namespace YMM4Physics2D.Core.Core
                 for (int y = 0; y < height; y++)
                 {
                     byte* row = scan0 + (y * pitch);
+                    bool insideFlow = false;
                     for (int x = 0; x < width; x++)
                     {
-                        int index = y * width + x;
+                        byte alpha = row[x * 4 + 3];
+                        bool isOpaque = alpha > threshold;
 
-                        if (!globalVisited[index] && row[x * 4 + 3] > threshold)
+                        if (isOpaque && !insideFlow && !globalVisited[y * width + x])
                         {
                             List<Vector2> contour = TraceFromPoint(scan0, pitch, width, height, threshold, x, y, globalVisited);
 
                             if (contour.Count >= 3)
                             {
                                 float area = GeometryUtils.CalculateArea(contour);
-
-                                if (area > 2.0f)
+                                if (System.Math.Abs(area) > 2.0f)
                                 {
                                     allContours.Add(contour);
                                 }
                             }
+
+                            insideFlow = true;
+                        }
+                        else if (!isOpaque)
+                        {
+                            insideFlow = false;
                         }
                     }
                 }
@@ -55,77 +64,65 @@ namespace YMM4Physics2D.Core.Core
 
         private static unsafe List<Vector2> TraceFromPoint(byte* scan0, int pitch, int width, int height, byte threshold, int startX, int startY, bool[] globalVisited)
         {
-            List<Vector2> points = [];
-            int length = width * height;
-            sbyte[] localHistory = _historyPool.Rent(length);
-            new Span<sbyte>(localHistory, 0, length).Fill(-1);
+            List<Vector2> points = new(256);
 
-            try
+            int x = startX;
+            int y = startY;
+
+            // ムーア近傍法の初期探索方向（左から来たので左上方向を見るのが一般的）
+            int backtrack = 4;
+
+            points.Add(new Vector2(x, y));
+            globalVisited[y * width + x] = true;
+
+            // 【改善2】localHistory（巨大配列）の削除
+            // 代わりに「始点に戻ったか」だけで判定する軽量ロジックに変更
+
+            int maxSteps = width * height; // 無限ループ防止用
+            int steps = 0;
+
+            while (steps < maxSteps)
             {
-                int[] dx = [0, 1, 1, 1, 0, -1, -1, -1];
-                int[] dy = [-1, -1, 0, 1, 1, 1, 0, -1];
+                bool foundNext = false;
 
-                int x = startX;
-                int y = startY;
-                int backtrack = 4;
-
-                points.Add(new Vector2(x, y));
-                globalVisited[y * width + x] = true;
-                localHistory[y * width + x] = (sbyte)backtrack;
-
-                int steps = 0;
-                while (steps < length)
+                for (int i = 0; i < 8; i++)
                 {
-                    bool foundNext = false;
+                    int idx = (backtrack + i) % 8;
+                    int nx = x + dx[idx];
+                    int ny = y + dy[idx];
 
-                    for (int i = 0; i < 8; i++)
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height)
                     {
-                        int idx = (backtrack + i) % 8;
-                        int nx = x + dx[idx];
-                        int ny = y + dy[idx];
+                        byte* row = scan0 + (ny * pitch);
+                        byte alpha = row[nx * 4 + 3];
 
-                        if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                        if (alpha > threshold)
                         {
-                            byte* row = scan0 + (ny * pitch);
-                            byte alpha = row[nx * 4 + 3];
-
-                            if (alpha > threshold)
+                            // 終了条件: 始点に戻った
+                            if (nx == startX && ny == startY)
                             {
-                                if (nx == startX && ny == startY)
-                                {
-                                    return points;
-                                }
-
-                                int key = ny * width + nx;
-                                int nextBacktrack = (idx + 5) % 8;
-
-                                int prevBacktrack = localHistory[key];
-                                if (prevBacktrack == nextBacktrack)
-                                {
-                                    return points;
-                                }
-
-                                x = nx;
-                                y = ny;
-                                points.Add(new Vector2(x, y));
-
-                                globalVisited[key] = true;
-                                localHistory[key] = (sbyte)nextBacktrack;
-                                backtrack = nextBacktrack;
-
-                                foundNext = true;
-                                break;
+                                return points;
                             }
+
+                            // 次のピクセルへ移動
+                            x = nx;
+                            y = ny;
+                            points.Add(new Vector2(x, y));
+
+                            // globalVisitedを更新（これでTraceAllContours側で重複スキャンを防ぐ）
+                            globalVisited[y * width + x] = true;
+
+                            // 次の探索方向を設定（現在地へ入ってきた方向の逆）
+                            backtrack = (idx + 5) % 8;
+
+                            foundNext = true;
+                            break;
                         }
                     }
-
-                    if (!foundNext) break;
-                    steps++;
                 }
-            }
-            finally
-            {
-                _historyPool.Return(localHistory);
+
+                if (!foundNext) break; // 孤立点または行き止まり
+                steps++;
             }
 
             return points;
@@ -139,7 +136,7 @@ namespace YMM4Physics2D.Core.Core
             if (!closed) contour.Add(contour[0]);
 
             List<Vector2> result = [];
-            SimplifyRecursive(contour, 0, contour.Count - 1, tolerance, result);
+            SimplifyRecursive(contour, 0, contour.Count - 1, tolerance * tolerance, result);
 
             if (result.Count > 1 && result[0] == result[^1])
                 result.RemoveAt(result.Count - 1);
@@ -192,11 +189,23 @@ namespace YMM4Physics2D.Core.Core
             }
         }
 
-        private static float GetPerpendicularDistance(Vector2 p, Vector2 a, Vector2 b)
+        private static float GetPerpendicularDistance(Vector2 p, Vector2 lineStart, Vector2 lineEnd)
         {
-            float area = MathF.Abs((b.X - a.X) * (a.Y - p.Y) - (a.X - p.X) * (b.Y - a.Y));
-            float bottom = Vector2.Distance(a, b);
-            return area / bottom;
+            float dx = lineEnd.X - lineStart.X;
+            float dy = lineEnd.Y - lineStart.Y;
+
+            // 距離の公式の分子（|Ax + By + C|）
+            float area = (dy * p.X - dx * p.Y + lineEnd.X * lineStart.Y - lineEnd.Y * lineStart.X);
+
+            // 分子を二乗する
+            float numerator = area * area;
+
+            // 分母（dx^2 + dy^2）はすでに二乗の形なのでルートを取らない
+            float denominator = dx * dx + dy * dy;
+
+            if (denominator == 0) return Vector2.DistanceSquared(p, lineStart);
+
+            return numerator / denominator;
         }
     }
 }

@@ -1,4 +1,5 @@
-﻿using System.Numerics;
+﻿using System.Diagnostics;
+using System.Numerics;
 using Vortice.DCommon;
 using Vortice.Direct2D1;
 using Vortice.DXGI;
@@ -19,20 +20,8 @@ namespace YMM4Physics2D.Core.Colliders
 
         public static List<List<Vector2[]>> GetVerticesFromImage(ID2D1DeviceContext context, ID2D1Image inputImage, Vector2 offset, Vector2 scale, byte alphaThreshold = 20, float simplifyTolerance = 1.5f)
         {
-            if (scale == Vector2.Zero) scale = Vector2.One;
-
-            return GeneratePolygonsInternal(
-                context,
-                inputImage,
-                offset,
-                scale,
-                alphaThreshold,
-                simplifyTolerance);
-        }
-
-        public static List<List<Vector2[]>> GeneratePolygonsInternal(ID2D1DeviceContext context, ID2D1Image inputImage, Vector2 offset, Vector2 scale, byte alphaThreshold = 20, float simplifyTolerance = 1.5f)
-        {
             if (inputImage == null) return [];
+            if (scale == Vector2.Zero) scale = Vector2.One;
 
             context.GetDpi(out float dpiX, out float dpiY);
 
@@ -49,11 +38,11 @@ namespace YMM4Physics2D.Core.Colliders
             );
 
             var rect = context.GetImageLocalBounds(inputImage);
-            var width = rect.Right - rect.Left;
-            var height = rect.Bottom - rect.Top;
+            int width = (int)(rect.Right - rect.Left);
+            int height = (int)(rect.Bottom - rect.Top);
 
-            using ID2D1Bitmap1 stagingBitmap = context.CreateBitmap(new SizeI((int)width, (int)height), IntPtr.Zero, 0, stagingProps);
-            using ID2D1Bitmap1 targetBitmap = context.CreateBitmap(new SizeI((int)width, (int)height), IntPtr.Zero, 0, targetProps);
+            using ID2D1Bitmap1 stagingBitmap = context.CreateBitmap(new SizeI(width, height), IntPtr.Zero, 0, stagingProps);
+            using ID2D1Bitmap1 targetBitmap = context.CreateBitmap(new SizeI(width, height), IntPtr.Zero, 0, targetProps);
 
             var oldTarget = context.Target;
             context.Target = targetBitmap;
@@ -69,7 +58,7 @@ namespace YMM4Physics2D.Core.Colliders
             List<List<Vector2>> allContours;
             try
             {
-                allContours = ContourTracer.TraceAllContours(map.Bits, map.Pitch, (int)width, (int)height, alphaThreshold);
+                allContours = ContourTracer.TraceAllContours(map.Bits, map.Pitch, width, height, alphaThreshold);
             }
             finally
             {
@@ -107,7 +96,6 @@ namespace YMM4Physics2D.Core.Colliders
             }
 
             List<List<Vector2[]>> groupedPolygons = [];
-
             foreach (var root in roots)
             {
                 List<List<Vector2>> currentShapeParts = [];
