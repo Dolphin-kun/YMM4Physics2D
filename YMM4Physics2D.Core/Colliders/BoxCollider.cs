@@ -4,11 +4,11 @@ namespace YMM4Physics2D.Core.Colliders
 {
     public class BoxCollider : Collider
     {
-        public float Width { get; private set; }
-        public float Height { get; private set; }
-
         private readonly Vector2[] _worldVertices = new Vector2[4];
         private readonly Vector2[] _worldAxes = new Vector2[2];
+
+        public float Width { get; private set; }
+        public float Height { get; private set; }
 
         public Vector2[] WorldVertices
         {
@@ -38,15 +38,19 @@ namespace YMM4Physics2D.Core.Colliders
         {
             Width = width;
             Height = height;
-
             MarkDirty();
         }
 
         public override void RecomputeAABB()
         {
-            Vector2 v0 = _worldVertices[0];
-            Vector2 min = v0;
-            Vector2 max = v0;
+            if (IsDirty)
+            {
+                UpdateCache();
+                return;
+            }
+
+            Vector2 min = _worldVertices[0];
+            Vector2 max = _worldVertices[0];
 
             for (int i = 1; i < 4; i++)
             {
@@ -79,29 +83,38 @@ namespace YMM4Physics2D.Core.Colliders
                 _worldVertices[2] = Offset + new Vector2(hw, hh);
                 _worldVertices[3] = Offset + new Vector2(-hw, hh);
 
-                RecomputeAABB();
-                IsDirty = false;
-                return;
+                _worldAxes[0] = Vector2.UnitX;
+                _worldAxes[1] = Vector2.UnitY;
+            }
+            else
+            {
+
+                float rotation = Body.Rotation;
+                Vector2 position = Body.Position;
+
+                Matrix3x2 transform = Matrix3x2.CreateRotation(rotation);
+                transform.Translation = position;
+
+                _worldAxes[0] = Vector2.Normalize(new Vector2(transform.M11, transform.M12));
+                _worldAxes[1] = Vector2.Normalize(new Vector2(transform.M21, transform.M22));
+
+                float halfWidth = Width / 2f;
+                float halfHeight = Height / 2f;
+
+                _worldVertices[0] = Vector2.Transform(new Vector2(-halfWidth, -halfHeight) + Offset, transform);
+                _worldVertices[1] = Vector2.Transform(new Vector2(halfWidth, -halfHeight) + Offset, transform);
+                _worldVertices[2] = Vector2.Transform(new Vector2(halfWidth, halfHeight) + Offset, transform);
+                _worldVertices[3] = Vector2.Transform(new Vector2(-halfWidth, halfHeight) + Offset, transform);
             }
 
-            float rotation = Body.Rotation;
-            Vector2 position = Body.Position;
-
-            Matrix3x2 transform = Matrix3x2.CreateRotation(rotation);
-            transform.Translation = position;
-
-            _worldAxes[0] = Vector2.Normalize(new Vector2(transform.M11, transform.M12));
-            _worldAxes[1] = Vector2.Normalize(new Vector2(transform.M21, transform.M22));
-
-            float halfWidth = Width / 2f;
-            float halfHeight = Height / 2f;
-
-            _worldVertices[0] = Vector2.Transform(new Vector2(-halfWidth, -halfHeight) + Offset, transform);
-            _worldVertices[1] = Vector2.Transform(new Vector2(halfWidth, -halfHeight) + Offset, transform);
-            _worldVertices[2] = Vector2.Transform(new Vector2(halfWidth, halfHeight) + Offset, transform);
-            _worldVertices[3] = Vector2.Transform(new Vector2(-halfWidth, halfHeight) + Offset, transform);
-
-            RecomputeAABB();
+            Vector2 min = _worldVertices[0];
+            Vector2 max = _worldVertices[0];
+            for (int i = 1; i < 4; i++)
+            {
+                min = Vector2.Min(min, _worldVertices[i]);
+                max = Vector2.Max(max, _worldVertices[i]);
+            }
+            WorldAABB = new AABB(min, max);
             IsDirty = false;
         }
     }

@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Numerics;
+﻿using System.Numerics;
 using Vortice;
 using Vortice.Direct2D1;
 using Vortice.Mathematics;
@@ -15,6 +14,8 @@ namespace YMM4Physics2D.Core.Controllers
         private readonly List<RigidBody> _bodies = [];
         public IReadOnlyList<RigidBody> Bodies => _bodies;
 
+        private readonly Dictionary<int, ID2D1PathGeometry> _geometryCache = [];
+
         private int _worldId = -1;
         private bool _isInitialized = false;
         private bool _disposed = false;
@@ -26,9 +27,8 @@ namespace YMM4Physics2D.Core.Controllers
 
         private Vector2 _currentDrawPosition;
         private float _currentDrawRotation;
-
-        private float _currentMass = 20.0f;
         private BodyType _currentBodyType;
+        private float _currentMass = 20.0f;
 
         public RigidBodyController(int worldId, WorldConfig? config, Vector2 position)
         {
@@ -43,7 +43,7 @@ namespace YMM4Physics2D.Core.Controllers
             if (_disposed) return;
 
             _currentDrawPosition = targetPos;
-            _currentDrawRotation = targetRot;
+            _currentDrawRotation = targetRot * MathF.PI / 180.0f;
             _currentBodyType = type;
 
             foreach (var body in _bodies)
@@ -83,7 +83,6 @@ namespace YMM4Physics2D.Core.Controllers
                 foreach (var body in _bodies)
                 {
                     body.Mass = massPerBody;
-
                     body.Restitution = restitution;
                     body.Friction = friction;
                     body.LinearDamping = linearDamping;
@@ -119,76 +118,105 @@ namespace YMM4Physics2D.Core.Controllers
             var bounds = target.GetImageLocalBounds(image);
             var topLeft = new Vector2(bounds.Left, bounds.Top);
 
+            if (!_lastSeparateParts)
+            {
+                foreach (var body in _bodies)
+                {
+                    Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
+
+                    Vector2 textureShift = -(body.VisualOffset + topLeft);
+                    Matrix3x2 textureMatrix = Matrix3x2.CreateTranslation(textureShift) * worldMatrix;
+
+                    target.Transform = textureMatrix;
+                    target.DrawImage(image);
+                }
+            }
+            else
+            {
+                DrawSeparateParts(target, image, topLeft);
+            }
+        }
+
+        private void DrawSeparateParts(ID2D1DeviceContext target, ID2D1Image image, Vector2 topLeft)
+        {
             using var factory = target.Factory;
+
+            var layerParams = new LayerParameters1
+            {
+                ContentBounds = new RawRectF(-10000, -10000, 20000, 20000),
+                MaskTransform = Matrix3x2.Identity,
+                Opacity = 1f
+            };
 
             foreach (var body in _bodies)
             {
-                Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
+                if (!_geometryCache.TryGetValue(body.Id, out var geometry))
+                {
+                    geometry = CreateBodyGeometry(factory, body);
+                    if (geometry == null) continue;
+                    _geometryCache[body.Id] = geometry;
+                }
 
+                Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
                 Vector2 textureShift = -(body.VisualOffset + topLeft);
                 Matrix3x2 textureMatrix = Matrix3x2.CreateTranslation(textureShift) * worldMatrix;
 
-                if (!_lastSeparateParts)
-                {
-                    target.Transform = textureMatrix;
-                    target.DrawImage(image);
-                }
-                else
-                {
-                    using var pathGeometry = factory.CreatePathGeometry();
-                    using var sink = pathGeometry.Open();
-                    bool hasFigure = false;
+                using var layer = target.CreateLayer(null);
 
-                    foreach (var col in body.Colliders)
+                layerParams.GeometricMask = geometry;
+
+                target.Transform = worldMatrix;
+                target.PushLayer(layerParams, layer);
+
+                target.Transform = textureMatrix;
+                target.DrawImage(image);
+
+                target.PopLayer();
+            }
+        }
+
+        private static ID2D1PathGeometry? CreateBodyGeometry(ID2D1Factory factory, RigidBody body)
+        {
+            var pathGeometry = factory.CreatePathGeometry();
+            using var sink = pathGeometry.Open();
+            bool hasFigure = false;
+
+            foreach (var col in body.Colliders)
+            {
+                if (col is PolygonCollider poly && poly.LocalVertices.Length > 0)
+                {
+                    sink.BeginFigure(poly.LocalVertices[0], FigureBegin.Filled);
+                    for (int i = 1; i < poly.LocalVertices.Length; i++)
                     {
-                        if (col is PolygonCollider poly && poly.LocalVertices.Length > 0)
-                        {
-                            sink.BeginFigure(poly.LocalVertices[0], FigureBegin.Filled);
-                            for (int i = 1; i < poly.LocalVertices.Length; i++)
-                            {
-                                sink.AddLine(poly.LocalVertices[i]);
-                            }
-                            sink.EndFigure(FigureEnd.Closed);
-                            hasFigure = true;
-                        }
-                        else if (col is CircleCollider circle)
-                        {
-                            Vector2 center = circle.Offset;
-                            float r = circle.Radius;
-
-                            Vector2 start = new Vector2(center.X + r, center.Y);
-                            Vector2 end = new Vector2(center.X - r, center.Y);
-
-                            sink.BeginFigure(start, FigureBegin.Filled);
-                            sink.AddArc(new ArcSegment(end, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
-                            sink.AddArc(new ArcSegment(start, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
-                            sink.EndFigure(FigureEnd.Closed);
-                            hasFigure = true;
-                        }
+                        sink.AddLine(poly.LocalVertices[i]);
                     }
-                    sink.Close();
+                    sink.EndFigure(FigureEnd.Closed);
+                    hasFigure = true;
+                }
+                else if (col is CircleCollider circle)
+                {
+                    Vector2 center = circle.Offset;
+                    float r = circle.Radius;
 
-                    if (!hasFigure) continue;
+                    Vector2 start = new(center.X + r, center.Y);
+                    Vector2 end = new(center.X - r, center.Y);
 
-                    var layerParameters = new LayerParameters1
-                    {
-                        ContentBounds = new RawRectF(-10000, -10000, 20000, 20000),
-                        GeometricMask = pathGeometry,
-                        MaskTransform = Matrix3x2.Identity,
-                        Opacity = 1f
-                    };
-
-                    target.Transform = worldMatrix;
-
-                    using var layer = target.CreateLayer(null);
-                    target.PushLayer(layerParameters, layer);
-
-                    target.Transform = textureMatrix;
-                    target.DrawImage(image);
-
-                    target.PopLayer();
+                    sink.BeginFigure(start, FigureBegin.Filled);
+                    sink.AddArc(new ArcSegment(end, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
+                    sink.AddArc(new ArcSegment(start, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
+                    sink.EndFigure(FigureEnd.Closed);
+                    hasFigure = true;
                 }
             }
+            sink.Close();
+
+            if (!hasFigure)
+            {
+                pathGeometry.Dispose();
+                return null;
+            }
+
+            return pathGeometry;
         }
 
         private void RebuildBodies(ID2D1DeviceContext context, ID2D1Image input, Vector2 zoom, float simplifyTolerance, byte alphaThreshold, bool separateParts)
@@ -198,14 +226,8 @@ namespace YMM4Physics2D.Core.Controllers
 
             PhysicsManager.Atomic(_worldId, (world) =>
             {
-                var sw = Stopwatch.StartNew();
-                foreach (var oldBody in _bodies)
-                {
-                    PhysicsManager.LeaveWorld(_worldId, oldBody);
-                    world.RemoveBody(oldBody);
-                }
-                _bodies.Clear();
-                
+                ClearBodies(world);
+
                 var partsVertices = ColliderGenerator.GetVerticesFromImage(
                     context,
                     input,
@@ -225,29 +247,49 @@ namespace YMM4Physics2D.Core.Controllers
 
                 foreach (var body in newBodies)
                 {
-                    Vector2 localCenter = body.VisualOffset + topLeft;
-                    Vector2 worldOffset = Vector2.Transform(localCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
-
-                    body.Position = _currentDrawPosition + worldOffset;
-                    body.Rotation = _currentDrawRotation;
-
-                    body.OnReset = () =>
-                    {
-                        Vector2 currentLocalCenter = body.VisualOffset + topLeft;
-                        Vector2 currentWorldOffset = Vector2.Transform(currentLocalCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
-
-                        body.Position = _currentDrawPosition + currentWorldOffset;
-                        body.Rotation = _currentDrawRotation;
-                        body.LinearVelocity = Vector2.Zero;
-                        body.AngularVelocity = 0f;
-                        body.ClearForces();
-                    };
-
+                    SetupNewBody(body, topLeft);
                     _bodies.Add(body);
-                    PhysicsManager.JoinWorld(_worldId, new WorldConfig { Id = _worldId });
                     world.AddBody(body);
                 }
             });
+        }
+
+        private void SetupNewBody(RigidBody body, Vector2 topLeft)
+        {
+            Vector2 localCenter = body.VisualOffset + topLeft;
+            Vector2 worldOffset = Vector2.Transform(localCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
+
+            body.Position = _currentDrawPosition + worldOffset;
+            body.Rotation = _currentDrawRotation;
+
+            Vector2 capturedLocalCenter = localCenter;
+
+            body.OnReset = () =>
+            {
+                Vector2 currentWorldOffset = Vector2.Transform(capturedLocalCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
+
+                body.Position = _currentDrawPosition + currentWorldOffset;
+                body.Rotation = _currentDrawRotation;
+                body.LinearVelocity = Vector2.Zero;
+                body.AngularVelocity = 0f;
+                body.ClearForces();
+            };
+        }
+
+        private void ClearBodies(PhysicsWorld world)
+        {
+            foreach (var oldBody in _bodies)
+            {
+                PhysicsManager.LeaveWorld(_worldId, oldBody);
+                world.RemoveBody(oldBody);
+            }
+            _bodies.Clear();
+
+            foreach (var geo in _geometryCache.Values)
+            {
+                geo.Dispose();
+            }
+            _geometryCache.Clear();
         }
 
         public void SetWorld(int worldId, WorldConfig? config)
@@ -299,6 +341,12 @@ namespace YMM4Physics2D.Core.Controllers
                     }
                     _worldId = -1;
                 }
+
+                foreach (var geo in _geometryCache.Values)
+                {
+                    geo.Dispose();
+                }
+                _geometryCache.Clear();
             }
             _disposed = true;
         }

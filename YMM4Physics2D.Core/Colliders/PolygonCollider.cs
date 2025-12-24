@@ -5,6 +5,12 @@ namespace YMM4Physics2D.Core.Colliders
 {
     public class PolygonCollider : Collider
     {
+        private Vector2[] _worldVertices = [];
+        private Vector2[] _worldNormals = [];
+        private Vector2[] _localNormals = [];
+
+        public Vector2[] LocalVertices { get; private set; } = [];
+
         public Vector2[] WorldVertices
         {
             get
@@ -23,16 +29,26 @@ namespace YMM4Physics2D.Core.Colliders
             }
         }
 
-        public Vector2[] LocalVertices { get; private set; } = [];
-
-        private Vector2[] _worldVertices = [];
-        private Vector2[] _worldNormals = [];
-        private Vector2[] _localNormals = [];
-
         public PolygonCollider(Vector2[] vertices, bool autoCenter = true)
         {
             ShapeType = ShapeType.Polygon;
             SetVertices(vertices, autoCenter);
+        }
+
+        public static PolygonCollider CreateBox(float width, float height)
+        {
+            float hw = width * 0.5f;
+            float hh = height * 0.5f;
+
+            var vertices = new Vector2[]
+            {
+                new(-hw, -hh),
+                new( hw, -hh),
+                new( hw,  hh),
+                new(-hw,  hh)
+            };
+
+            return new PolygonCollider(vertices, autoCenter: false);
         }
 
         public void SetVertices(Vector2[] vertices, bool autoCenter = true)
@@ -76,41 +92,13 @@ namespace YMM4Physics2D.Core.Colliders
             MarkDirty();
         }
 
-        private void UpdateCache()
-        {
-            if (Body == null)
-            {
-                Array.Copy(LocalVertices, _worldVertices, LocalVertices.Length);
-                Array.Copy(_localNormals, _worldNormals, _localNormals.Length);
-                IsDirty = false;
-                return;
-            }
-
-            float rotation = Body.Rotation;
-            Vector2 position = Body.Position;
-
-            Matrix3x2 transform = Matrix3x2.CreateRotation(rotation);
-            transform.Translation = position;
-
-            Matrix3x2 rotationMatrix = Matrix3x2.CreateRotation(rotation);
-
-            for (int i = 0; i < LocalVertices.Length; i++)
-            {
-                Vector2 v = LocalVertices[i] + Offset;
-                _worldVertices[i] = Vector2.Transform(v, transform);
-            }
-
-            for (int i = 0; i < _localNormals.Length; i++)
-            {
-                _worldNormals[i] = Vector2.Transform(_localNormals[i], rotationMatrix);
-            }
-
-            IsDirty = false;
-        }
-
         public override void RecomputeAABB()
         {
-            if (IsDirty) UpdateCache();
+            if (IsDirty)
+            {
+                UpdateCache();
+                return;
+            }
 
             if (_worldVertices.Length == 0)
             {
@@ -118,20 +106,16 @@ namespace YMM4Physics2D.Core.Colliders
                 return;
             }
 
-            float minX = float.MaxValue;
-            float minY = float.MaxValue;
-            float maxX = float.MinValue;
-            float maxY = float.MinValue;
+            Vector2 min = _worldVertices[0];
+            Vector2 max = _worldVertices[0];
 
             foreach (var v in _worldVertices)
             {
-                if (v.X < minX) minX = v.X;
-                if (v.Y < minY) minY = v.Y;
-                if (v.X > maxX) maxX = v.X;
-                if (v.Y > maxY) maxY = v.Y;
+                min = Vector2.Min(min, v);
+                max = Vector2.Max(max, v);
             }
 
-            WorldAABB = new AABB(new Vector2(minX, minY), new Vector2(maxX, maxY));
+            WorldAABB = new AABB(min, max);
         }
 
         public override float CalculateArea()
@@ -164,24 +148,45 @@ namespace YMM4Physics2D.Core.Colliders
             return denominator > 1e-6f ? (mass / 6.0f) * (numerator / denominator) : 0f;
         }
 
-        public static PolygonCollider CreateBox(float width, float height)
+        private void UpdateCache()
         {
-            float hw = width * 0.5f;
-            float hh = height * 0.5f;
-
-            var vertices = new Vector2[]
+            if (Body == null)
             {
-                new(-hw, -hh),
-                new( hw, -hh),
-                new( hw,  hh),
-                new(-hw,  hh)
-            };
+                Array.Copy(LocalVertices, _worldVertices, LocalVertices.Length);
+                Array.Copy(_localNormals, _worldNormals, _localNormals.Length);
+            }
+            else
+            {
+                float rotation = Body.Rotation;
+                Vector2 position = Body.Position;
 
-            return new PolygonCollider(vertices, autoCenter: false);
+                Matrix3x2 transform = Matrix3x2.CreateRotation(rotation);
+                transform.Translation = position;
+
+                Matrix3x2 rotationMatrix = Matrix3x2.CreateRotation(rotation);
+
+                for (int i = 0; i < LocalVertices.Length; i++)
+                {
+                    Vector2 v = LocalVertices[i] + Offset;
+                    _worldVertices[i] = Vector2.Transform(v, transform);
+                }
+
+                for (int i = 0; i < _localNormals.Length; i++)
+                {
+                    _worldNormals[i] = Vector2.Transform(_localNormals[i], rotationMatrix);
+                }
+            }
+
+            Vector2 min = _worldVertices[0];
+            Vector2 max = _worldVertices[0];
+            for (int i = 1; i < _worldVertices.Length; i++)
+            {
+                min = Vector2.Min(min, _worldVertices[i]);
+                max = Vector2.Max(max, _worldVertices[i]);
+            }
+            WorldAABB = new AABB(min, max);
+
+            IsDirty = false;
         }
-
-        
-
-        
     }
 }

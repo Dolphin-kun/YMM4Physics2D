@@ -41,10 +41,6 @@ namespace YMM4Physics2D.Core.Bodies
 
         public Vector2 Force;
         public float Torque;
-        public float LinearDamping = 0.05f;
-        public float AngularDamping = 3.0f;
-        public float Restitution = 0.5f;
-        public float Friction = 1f;
 
         private float _mass;
         public float Mass
@@ -64,7 +60,10 @@ namespace YMM4Physics2D.Core.Bodies
 
         public float InvMass { get; private set; }
         public float InvInertia { get; private set; }
-        public Vector2 VisualOffset { get; set; }
+        public float Restitution { get; set; } = 0.5f;
+        public float Friction { get; set; } = 1f;
+        public float LinearDamping { get; set; } = 0.05f;
+        public float AngularDamping { get; set; } = 3.0f;
 
         private BodyType _type;
         public BodyType Type
@@ -83,6 +82,9 @@ namespace YMM4Physics2D.Core.Bodies
         private readonly List<Collider> _colliders = [];
         public IReadOnlyList<Collider> Colliders => _colliders;
 
+        public AABB WorldAABB { get; private set; }
+        public Vector2 VisualOffset { get; set; }
+
         public bool IsActive { get; set; } = true;
         public int StartFrame { get; set; } = 0;
         public Action? OnReset { get; set; }
@@ -90,10 +92,10 @@ namespace YMM4Physics2D.Core.Bodies
         public RigidBody(Vector2 position, float mass, BodyType bodyType)
         {
             Id = Interlocked.Increment(ref _nextId);
-
             _position = position;
             _type = bodyType;
             _mass = System.Math.Max(0f, mass);
+            WorldAABB = new AABB(position, position);
 
             RecalculateMassData();
         }
@@ -119,6 +121,7 @@ namespace YMM4Physics2D.Core.Bodies
                 collider.SetBody(this);
                 _colliders.Add(collider);
                 collider.MarkDirty();
+                UpdateWorldAABB();
                 RecalculateMassData();
             }
         }
@@ -139,6 +142,7 @@ namespace YMM4Physics2D.Core.Bodies
 
             if (addedAny)
             {
+                UpdateWorldAABB();
                 RecalculateMassData();
             }
         }
@@ -147,6 +151,7 @@ namespace YMM4Physics2D.Core.Bodies
         {
             if (_colliders.Remove(collider))
             {
+                UpdateWorldAABB();
                 RecalculateMassData();
             }
         }
@@ -154,21 +159,29 @@ namespace YMM4Physics2D.Core.Bodies
         public void ClearColliders()
         {
             _colliders.Clear();
+            UpdateWorldAABB();
             ComputeInertia();
         }
 
-        private void RecalculateMassData()
+        public void UpdateWorldAABB()
         {
-            if (Type == BodyType.Static || _mass <= 0.0001f)
+            if (_colliders.Count == 0)
             {
-                InvMass = 0f;
-                InvInertia = 0f;
+                WorldAABB = new AABB(_position, _position);
+                return;
             }
-            else
+
+            Vector2 min = new(float.MaxValue, float.MaxValue);
+            Vector2 max = new(float.MinValue, float.MinValue);
+
+            foreach (var col in _colliders)
             {
-                InvMass = 1.0f / _mass;
-                ComputeInertia();
+                AABB box = col.WorldAABB;
+                min = Vector2.Min(min, box.Min);
+                max = Vector2.Max(max, box.Max);
             }
+
+            WorldAABB = new AABB(min, max);
         }
 
         public void ComputeInertia()
@@ -204,6 +217,20 @@ namespace YMM4Physics2D.Core.Bodies
             }
 
             InvInertia = totalInertia > 0f ? 1.0f / totalInertia : 0f;
+        }
+
+        private void RecalculateMassData()
+        {
+            if (Type == BodyType.Static || _mass <= 0.0001f)
+            {
+                InvMass = 0f;
+                InvInertia = 0f;
+            }
+            else
+            {
+                InvMass = 1.0f / _mass;
+                ComputeInertia();
+            }
         }
 
         private void MarkDirtyColliders()

@@ -88,7 +88,7 @@ namespace YMM4Physics2D.Core.Core
 
         public static void Atomic(int worldId, Action<PhysicsWorld> action)
         {
-            PhysicsWorld world;
+            PhysicsWorld? world;
 
             lock (_lock)
             {
@@ -105,15 +105,18 @@ namespace YMM4Physics2D.Core.Core
             world.Gravity = config.Gravity;
             world.Iterations = config.Iterations;
             world.SnapshotInterval = config.SnapshotInterval;
+
             world.MinVelocityForRestitution = config.MinVelocityForRestitution;
             world.PositionCorrectionPercent = config.PositionCorrectionPercent;
             world.PositionCorrectionSlop = config.PositionCorrectionSlop;
 
+            Size effectiveSize = config.ScreenSize;
             if (screenSize != null)
             {
-                config.ScreenSize = screenSize.Value;
+                effectiveSize = screenSize.Value;
             }
-            world.UpdateWalls(config.EnableWalls, config.ScreenSize);
+
+            world.UpdateWalls(config.EnableWalls, effectiveSize);
         }
     }
 }

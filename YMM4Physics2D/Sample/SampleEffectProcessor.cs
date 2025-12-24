@@ -1,10 +1,6 @@
-﻿using System.Linq;
-using System.Numerics;
-using Vortice;
+﻿using System.Numerics;
 using Vortice.Direct2D1;
-using Vortice.Mathematics;
 using YMM4Physics2D.Core.Bodies;
-using YMM4Physics2D.Core.Colliders;
 using YMM4Physics2D.Core.Controllers;
 using YMM4Physics2D.Core.Core;
 using YukkuriMovieMaker.Commons;
@@ -52,13 +48,11 @@ namespace YMM4Physics2D.Sample
             var config = WorldSettings.WorldSettings.Default.Configs.FirstOrDefault(c => c.Id == worldId);
             if (config != null) PhysicsManager.UpdateWorldSettings(worldId, config, effectDescription.ScreenSize);
 
+            var targetPos = new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y);
+
             if (_controller == null && input != null)
             {
-                _controller = new RigidBodyController(
-                    worldId,
-                    config,
-                    new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y)
-                );
+                _controller = new RigidBodyController(worldId, config, targetPos);
             }
 
             if (_controller == null) return drawDesc;
@@ -67,14 +61,19 @@ namespace YMM4Physics2D.Sample
             _controller.UpdateBodyProperties(mass, restitution, friction, linearDamping, angularDamping);
             _controller.SyncShape(devices.DeviceContext, input, currentZoom, simplifyTolerance: simplifyTolerance, separateParts: isSeparate);
 
-            _controller.Step(
-                timelineFrame,
-                itemFrame,
-                fps,
-                new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y),
-                (float)(drawDesc.Rotation.Z * Math.PI / 180.0),
-                type
-            );
+            if (type == BodyType.Static)
+            {
+                foreach (var body in _controller.Bodies)
+                {
+                    body.Position = targetPos;
+                    body.Rotation = drawDesc.Rotation.Z;
+
+                    body.LinearVelocity = Vector2.Zero;
+                    body.AngularVelocity = 0f;
+                }
+            }
+
+            _controller.Step(timelineFrame, itemFrame, fps, targetPos, drawDesc.Rotation.Z, type);
 
             _outputCommandList?.Dispose();
             _outputCommandList = devices.DeviceContext.CreateCommandList();
@@ -91,10 +90,7 @@ namespace YMM4Physics2D.Sample
             }
             _outputCommandList.Close();
 
-            if (type == BodyType.Static || _controller.Bodies.Count == 0)
-            {
-                return drawDesc;
-            }
+            if (_controller.Bodies.Count == 0) return drawDesc;
 
             return drawDesc with
             {

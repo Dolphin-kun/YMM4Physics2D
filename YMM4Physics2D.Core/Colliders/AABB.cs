@@ -2,16 +2,10 @@
 
 namespace YMM4Physics2D.Core.Colliders
 {
-    public struct AABB
+    public struct AABB(Vector2 min, Vector2 max)
     {
-        public Vector2 Min;
-        public Vector2 Max;
-
-        public AABB(Vector2 min, Vector2 max)
-        {
-            Min = min;
-            Max = max;
-        }
+        public Vector2 Min = min;
+        public Vector2 Max = max;
 
         public readonly float Width => Max.X - Min.X;
         public readonly float Height => Max.Y - Min.Y;

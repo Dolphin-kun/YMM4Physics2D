@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Numerics;
+﻿using System.Numerics;
 using Vortice.DCommon;
 using Vortice.Direct2D1;
 using Vortice.DXGI;
@@ -11,11 +10,10 @@ namespace YMM4Physics2D.Core.Colliders
 {
     public static class ColliderGenerator
     {
-        private class ContourNode
+        private class ContourNode(List<Vector2> contour)
         {
-            public List<Vector2> Contour { get; set; }
+            public List<Vector2> Contour { get; set; } = contour;
             public List<ContourNode> Children { get; } = [];
-            public ContourNode(List<Vector2> contour) => Contour = contour;
         }
 
         public static List<List<Vector2[]>> GetVerticesFromImage(ID2D1DeviceContext context, ID2D1Image inputImage, Vector2 offset, Vector2 scale, byte alphaThreshold = 20, float simplifyTolerance = 1.5f)

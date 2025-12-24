@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace YMM4Physics2D.Core.Math
 {
@@ -34,7 +35,6 @@ namespace YMM4Physics2D.Core.Math
                 {
                     float minDist = float.MaxValue;
                     int closestIndex = -1;
-                    Vector2 intersection = Vector2.Zero;
 
                     for (int j = 0; j < vertices.Count; ++j)
                     {
@@ -50,7 +50,6 @@ namespace YMM4Physics2D.Core.Math
                             {
                                 minDist = dist;
                                 closestIndex = j;
-                                intersection = hit;
                             }
                         }
                     }
@@ -68,7 +67,6 @@ namespace YMM4Physics2D.Core.Math
                                 {
                                     minDist = dist;
                                     closestIndex = j;
-                                    intersection = At(vertices, j);
                                 }
                             }
                         }
@@ -107,12 +105,6 @@ namespace YMM4Physics2D.Core.Math
             return list;
         }
 
-        private static Vector2 At(List<Vector2> vertices, int index)
-        {
-            int c = vertices.Count;
-            return vertices[(index % c + c) % c];
-        }
-
         private static bool IsConvex(List<Vector2> vertices)
         {
             for (int i = 0; i < vertices.Count; i++)
@@ -120,16 +112,6 @@ namespace YMM4Physics2D.Core.Math
                 if (IsReflex(i, vertices)) return false;
             }
             return true;
-        }
-
-        private static bool IsReflex(int i, List<Vector2> vertices)
-        {
-            return Cross(At(vertices, i - 1), At(vertices, i), At(vertices, i + 1)) < 0;
-        }
-
-        private static float Cross(Vector2 a, Vector2 b, Vector2 c)
-        {
-            return (b.X - a.X) * (c.Y - b.Y) - (b.Y - a.Y) * (c.X - b.X);
         }
 
         private static bool CanSee(int i, int j, List<Vector2> vertices)
@@ -150,6 +132,41 @@ namespace YMM4Physics2D.Core.Math
             return true;
         }
 
+        private static List<Vector2> Copy(int i, int j, List<Vector2> vertices)
+        {
+            List<Vector2> p = [];
+            if (i < j)
+            {
+                for (int k = i; k <= j; k++) p.Add(At(vertices, k));
+            }
+            else
+            {
+                for (int k = i; k < vertices.Count; k++) p.Add(At(vertices, k));
+                for (int k = 0; k <= j; k++) p.Add(At(vertices, k));
+            }
+            return p;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector2 At(List<Vector2> vertices, int index)
+        {
+            int c = vertices.Count;
+            return vertices[(index % c + c) % c];
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsReflex(int i, List<Vector2> vertices)
+        {
+            return Cross(At(vertices, i - 1), At(vertices, i), At(vertices, i + 1)) < 0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static float Cross(Vector2 a, Vector2 b, Vector2 c)
+        {
+            return (b.X - a.X) * (c.Y - b.Y) - (b.Y - a.Y) * (c.X - b.X);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool LineIntersect(Vector2 p1, Vector2 p2, Vector2 p3, Vector2 p4, out Vector2 intersection)
         {
             intersection = Vector2.Zero;
@@ -166,21 +183,6 @@ namespace YMM4Physics2D.Core.Math
                 return true;
             }
             return false;
-        }
-
-        private static List<Vector2> Copy(int i, int j, List<Vector2> vertices)
-        {
-            List<Vector2> p = [];
-            if (i < j)
-            {
-                for (int k = i; k <= j; k++) p.Add(At(vertices, k));
-            }
-            else
-            {
-                for (int k = i; k < vertices.Count; k++) p.Add(At(vertices, k));
-                for (int k = 0; k <= j; k++) p.Add(At(vertices, k));
-            }
-            return p;
         }
     }
 }

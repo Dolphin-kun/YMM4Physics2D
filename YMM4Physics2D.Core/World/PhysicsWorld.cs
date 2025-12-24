@@ -12,27 +12,24 @@ namespace YMM4Physics2D.Core.World
         private readonly List<RigidBody> _bodies = [];
         public IReadOnlyList<RigidBody> Bodies => _bodies;
 
+        private readonly List<RigidBody> _wallBodies = [];
+        private readonly List<WorldState> _snapshots = [];
+
         public Vector2 Gravity { get; set; } = new Vector2(0f, 981.0f);
         public int Iterations { get; set; } = 4;
-        public int CurrentFrame { get; private set; } = 0;
         public int SnapshotInterval { get; set; } = 60;
 
         public float MinVelocityForRestitution { get; set; } = 1.0f;
         public float PositionCorrectionPercent { get; set; } = 0.4f;
         public float PositionCorrectionSlop { get; set; } = 0.01f;
 
-        private readonly List<WorldState> _snapshots = [];
-        private readonly List<RigidBody> _wallBodies = [];
+        public int CurrentFrame { get; private set; } = 0;
 
         private bool _lastEnabled = false;
         private Size _lastScreenSize = Size.Empty;
         private bool _isInitialized = false;
 
         private readonly Lock _lock = new();
-
-        public PhysicsWorld()
-        {
-        }
 
         public void AddBody(RigidBody body)
         {
@@ -152,28 +149,32 @@ namespace YMM4Physics2D.Core.World
 
                 if (!body.IsActive) continue;
                 if (CurrentFrame < body.StartFrame) continue;
-                if (body.Type == BodyType.Static) continue;
 
-                Vector2 acceleration = (body.Force * body.InvMass) + Gravity;
-                body.LinearVelocity += acceleration * deltaTime;
-
-                body.Position += body.LinearVelocity * deltaTime;
-                body.Rotation += body.AngularVelocity * deltaTime;
-
-                body.LinearVelocity *= MathF.Exp(-body.LinearDamping * deltaTime);
-                body.AngularVelocity *= MathF.Exp(-body.AngularDamping * deltaTime);
-
-                if (MathF.Abs(body.AngularVelocity) < 0.03f)
+                if (body.Type != BodyType.Static)
                 {
-                    body.AngularVelocity = 0f;
-                }
+                    Vector2 acceleration = (body.Force * body.InvMass) + Gravity;
+                    body.LinearVelocity += acceleration * deltaTime;
 
-                body.ClearForces();
+                    body.Position += body.LinearVelocity * deltaTime;
+                    body.Rotation += body.AngularVelocity * deltaTime;
+
+                    body.LinearVelocity *= MathF.Exp(-body.LinearDamping * deltaTime);
+                    body.AngularVelocity *= MathF.Exp(-body.AngularDamping * deltaTime);
+
+                    if (MathF.Abs(body.AngularVelocity) < 0.03f)
+                    {
+                        body.AngularVelocity = 0f;
+                    }
+
+                    body.ClearForces();
+                }
 
                 foreach (var collider in body.Colliders)
                 {
                     collider.RecomputeAABB();
                 }
+
+                body.UpdateWorldAABB();
             }
         }
 
@@ -184,19 +185,17 @@ namespace YMM4Physics2D.Core.World
                 RigidBody bodyA = _bodies[i];
                 if (bodyA == null) continue;
 
-                AABB aabbA = GetBodyAABB(bodyA);
+                AABB aabbA = bodyA.WorldAABB;
 
                 for (int j = i + 1; j < _bodies.Count; j++)
                 {
                     RigidBody bodyB = _bodies[j];
-                    if (!CanCollide(bodyB)) continue;
 
+                    if (!bodyB.IsActive) continue;
                     if (bodyA.InvMass == 0f && bodyB.InvMass == 0f) continue;
                     if (CurrentFrame < bodyA.StartFrame || CurrentFrame < bodyB.StartFrame) continue;
 
-
-                    AABB aabbB = GetBodyAABB(bodyB);
-                    if (!aabbA.Overlaps(aabbB))
+                    if (!aabbA.Overlaps(bodyB.WorldAABB))
                     {
                         continue;
                     }
@@ -223,6 +222,7 @@ namespace YMM4Physics2D.Core.World
             {
                 body.OnReset?.Invoke();
                 foreach (var col in body.Colliders) col.RecomputeAABB();
+                body.UpdateWorldAABB();
             }
 
             SaveSnapshot(0);
@@ -256,6 +256,7 @@ namespace YMM4Physics2D.Core.World
                         {
                             state.ApplyTo(body);
                             foreach (var col in body.Colliders) col.RecomputeAABB();
+                            body.UpdateWorldAABB();
                         }
                     }
 
@@ -300,11 +301,6 @@ namespace YMM4Physics2D.Core.World
             }
 
             return new AABB(min, max);
-        }
-
-        private static bool CanCollide(RigidBody body)
-        {
-            return body != null && body.IsActive && body.Colliders.Count > 0;
         }
     }
 }
