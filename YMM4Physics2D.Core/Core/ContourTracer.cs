@@ -69,16 +69,12 @@ namespace YMM4Physics2D.Core.Core
             int x = startX;
             int y = startY;
 
-            // ムーア近傍法の初期探索方向（左から来たので左上方向を見るのが一般的）
             int backtrack = 4;
 
             points.Add(new Vector2(x, y));
             globalVisited[y * width + x] = true;
 
-            // 【改善2】localHistory（巨大配列）の削除
-            // 代わりに「始点に戻ったか」だけで判定する軽量ロジックに変更
-
-            int maxSteps = width * height; // 無限ループ防止用
+            int maxSteps = width * height;
             int steps = 0;
 
             while (steps < maxSteps)
@@ -98,21 +94,17 @@ namespace YMM4Physics2D.Core.Core
 
                         if (alpha > threshold)
                         {
-                            // 終了条件: 始点に戻った
                             if (nx == startX && ny == startY)
                             {
                                 return points;
                             }
 
-                            // 次のピクセルへ移動
                             x = nx;
                             y = ny;
                             points.Add(new Vector2(x, y));
 
-                            // globalVisitedを更新（これでTraceAllContours側で重複スキャンを防ぐ）
                             globalVisited[y * width + x] = true;
 
-                            // 次の探索方向を設定（現在地へ入ってきた方向の逆）
                             backtrack = (idx + 5) % 8;
 
                             foundNext = true;
@@ -121,7 +113,7 @@ namespace YMM4Physics2D.Core.Core
                     }
                 }
 
-                if (!foundNext) break; // 孤立点または行き止まり
+                if (!foundNext) break;
                 steps++;
             }
 
@@ -194,13 +186,8 @@ namespace YMM4Physics2D.Core.Core
             float dx = lineEnd.X - lineStart.X;
             float dy = lineEnd.Y - lineStart.Y;
 
-            // 距離の公式の分子（|Ax + By + C|）
             float area = (dy * p.X - dx * p.Y + lineEnd.X * lineStart.Y - lineEnd.Y * lineStart.X);
-
-            // 分子を二乗する
             float numerator = area * area;
-
-            // 分母（dx^2 + dy^2）はすでに二乗の形なのでルートを取らない
             float denominator = dx * dx + dy * dy;
 
             if (denominator == 0) return Vector2.DistanceSquared(p, lineStart);

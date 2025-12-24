@@ -49,6 +49,7 @@ namespace YMM4Physics2D.Sample
             if (config != null) PhysicsManager.UpdateWorldSettings(worldId, config, effectDescription.ScreenSize);
 
             var targetPos = new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y);
+            var targetRot = drawDesc.Rotation.Z;
 
             if (_controller == null && input != null)
             {
@@ -63,17 +64,26 @@ namespace YMM4Physics2D.Sample
 
             if (type == BodyType.Static)
             {
+                float dt = 1.0f / fps;
+
                 foreach (var body in _controller.Bodies)
                 {
-                    body.Position = targetPos;
-                    body.Rotation = drawDesc.Rotation.Z;
+                    Vector2 positionDiff = targetPos - body.Position;
 
-                    body.LinearVelocity = Vector2.Zero;
-                    body.AngularVelocity = 0f;
+                    if (dt > 0)
+                    {
+                        body.LinearVelocity = positionDiff / dt;
+
+                        float rotationDiff = targetRot - body.Rotation;
+                        body.AngularVelocity = rotationDiff / dt;
+                    }
+
+                    body.Position = targetPos;
+                    body.Rotation = targetRot;
                 }
             }
 
-            _controller.Step(timelineFrame, itemFrame, fps, targetPos, drawDesc.Rotation.Z, type);
+            _controller.Step(timelineFrame, itemFrame, fps, targetPos, targetRot, type);
 
             _outputCommandList?.Dispose();
             _outputCommandList = devices.DeviceContext.CreateCommandList();

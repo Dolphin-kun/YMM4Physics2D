@@ -276,31 +276,5 @@ namespace YMM4Physics2D.Core.World
             _bodies.Add(wall);
             _wallBodies.Add(wall);
         }
-
-        private static AABB GetBodyAABB(RigidBody body)
-        {
-            Vector2 min = new(float.MaxValue, float.MaxValue);
-            Vector2 max = new(float.MinValue, float.MinValue);
-
-            bool hasValidCollider = false;
-
-            foreach (var col in body.Colliders)
-            {
-                if (col == null) continue;
-
-                hasValidCollider = true;
-                AABB box = col.WorldAABB;
-
-                min = Vector2.Min(min, box.Min);
-                max = Vector2.Max(max, box.Max);
-            }
-
-            if (!hasValidCollider)
-            {
-                return new AABB(body.Position, body.Position);
-            }
-
-            return new AABB(min, max);
-        }
     }
 }
