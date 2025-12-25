@@ -3,7 +3,7 @@ using System.Windows.Data;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Views.Converters;
 
-namespace YMM4Physics2D.Sample.WorldSettings
+namespace YMM4Physics2D.WorldSettings
 {
     internal class WorldSettingsButtonAttribute: PropertyEditorAttribute2
     {

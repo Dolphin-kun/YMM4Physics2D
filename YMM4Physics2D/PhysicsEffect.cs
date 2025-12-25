@@ -1,19 +1,19 @@
 ﻿using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using YMM4Physics2D.Core.Bodies;
-using YMM4Physics2D.Sample.WorldSettings;
+using YMM4Physics2D.WorldSettings;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Controls;
 using YukkuriMovieMaker.Exo;
 using YukkuriMovieMaker.Player.Video;
 using YukkuriMovieMaker.Plugin.Effects;
 
-namespace YMM4Physics2D.Sample
+namespace YMM4Physics2D
 {
-    [VideoEffect("サンプル物理演算エフェクト", ["サンプル"], [])]
-    internal class SampleEffect : VideoEffectBase
+    [VideoEffect("物理演算", ["アニメーション"], ["Physics"],IsAviUtlSupported =false,IsEffectItemSupported =false)]
+    internal class PhysicsEffect : VideoEffectBase
     {
-        public override string Label => "サンプル物理演算エフェクト";
+        public override string Label => "物理演算";
 
         [Display(GroupName = "ワールド", Name = "ワールド設定", Description = "ワールド設定")]
         [WorldSettingsButton]
@@ -27,7 +27,7 @@ namespace YMM4Physics2D.Sample
         public double WorldId { get => worldId; set => Set(ref worldId, value); }
         double worldId = 0;
 
-        [Display(GroupName = "物理設定", Name = "物理挙動の種類", Description = "物理挙動の種類")]
+        [Display(GroupName = "物理設定", Name = "種類", Description = "物理挙動の種類")]
         [EnumComboBox]
         public BodyType BodyType { get => bodyType; set => Set(ref bodyType, value); }
         BodyType bodyType = BodyType.Dynamic;
@@ -68,7 +68,7 @@ namespace YMM4Physics2D.Sample
 
         public override IVideoEffectProcessor CreateVideoEffect(IGraphicsDevicesAndContext devices)
         {
-            return new SampleEffectProcessor(devices, this);
+            return new PhysicsEffectProcessor(devices, this);
         }
 
         protected override IEnumerable<IAnimatable> GetAnimatables() => [Mass,Restitution,Friction,LinearDamping,AngularDamping,SimplifyTolerance];

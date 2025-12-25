@@ -2,7 +2,7 @@
 using System.Windows.Controls;
 using YukkuriMovieMaker.Commons;
 
-namespace YMM4Physics2D.Sample.WorldSettings
+namespace YMM4Physics2D.WorldSettings
 {
     public partial class WorldSettingsButton : UserControl, IPropertyEditorControl
     {

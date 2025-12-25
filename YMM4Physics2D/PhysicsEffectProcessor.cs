@@ -6,12 +6,12 @@ using YMM4Physics2D.Core.Core;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Player.Video;
 
-namespace YMM4Physics2D.Sample
+namespace YMM4Physics2D
 {
-    internal class SampleEffectProcessor : IVideoEffectProcessor
+    internal class PhysicsEffectProcessor : IVideoEffectProcessor
     {
         private readonly IGraphicsDevicesAndContext devices;
-        private readonly SampleEffect item;
+        private readonly PhysicsEffect item;
         private ID2D1Image? input;
         private ID2D1CommandList? _outputCommandList;
 
@@ -19,7 +19,7 @@ namespace YMM4Physics2D.Sample
 
         public ID2D1Image Output => _outputCommandList ?? input ?? throw new NullReferenceException(nameof(input) + " is null");
 
-        public SampleEffectProcessor(IGraphicsDevicesAndContext devices, SampleEffect item)
+        public PhysicsEffectProcessor(IGraphicsDevicesAndContext devices, PhysicsEffect item)
         {
             this.devices = devices;
             this.item = item;

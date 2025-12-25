@@ -3,12 +3,12 @@ using System.Numerics;
 using YMM4Physics2D.Core.World;
 using YukkuriMovieMaker.Plugin;
 
-namespace YMM4Physics2D.Sample.WorldSettings
+namespace YMM4Physics2D.WorldSettings
 {
     internal class WorldSettings : SettingsBase<WorldSettings>
     {
         public override SettingsCategory Category => SettingsCategory.None;
-        public override string Name => "World Settings";
+        public override string Name => "ワールド設定";
 
         public override bool HasSettingView => false;
         public override object? SettingView => null;
@@ -185,16 +185,17 @@ namespace YMM4Physics2D.Sample.WorldSettings
         }
 
         // 許容めり込み深さ
-        [DefaultValue(0.01f)]
+        [DefaultValue(1.0f)]
         public float PositionCorrectionSlop
         {
-            get => GetCurrentConfig().PositionCorrectionSlop;
+            get => GetCurrentConfig().PositionCorrectionSlop * 100f;
             set
             {
                 var config = GetCurrentConfig();
-                if (config.PositionCorrectionSlop != value)
+                var val = value / 100f;
+                if (config.PositionCorrectionSlop != val)
                 {
-                    config.PositionCorrectionSlop = value;
+                    config.PositionCorrectionSlop = val;
                     OnPropertyChanged(nameof(PositionCorrectionSlop));
                     Save();
                 }
