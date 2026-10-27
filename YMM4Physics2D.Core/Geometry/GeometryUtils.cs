@@ -1,6 +1,6 @@
 ﻿using System.Numerics;
 
-namespace YMM4Physics2D.Core.Math
+namespace YMM4Physics2D.Core.Geometry
 {
     public static class GeometryUtils
     {
@@ -18,10 +18,7 @@ namespace YMM4Physics2D.Core.Math
         }
 
         public static float CalculateArea(IList<Vector2> vertices)
-            => System.Math.Abs(CalculateSignedArea(vertices));
-
-        public static bool IsCounterClockwise(IList<Vector2> vertices)
-            => CalculateSignedArea(vertices) > 0;
+            => Math.Abs(CalculateSignedArea(vertices));
 
         public static bool IsPointInPolygon(Vector2 point, IList<Vector2> polygon)
         {
@@ -35,18 +32,6 @@ namespace YMM4Physics2D.Core.Math
                 }
             }
             return inside;
-        }
-
-        public static Vector2 GetPolygonCenter(Vector2[] vertices)
-        {
-            Vector2 center = Vector2.Zero;
-
-            for (int i = 0; i < vertices.Length; i++)
-            {
-                center += vertices[i];
-            }
-
-            return center / vertices.Length;
         }
 
         public static Vector2 CalculateCentroid(Vector2[] vs)

@@ -5,33 +5,30 @@ namespace YMM4Physics2D.Core.Bodies
 {
     public class RigidBody
     {
-        private static int _nextId = 0;
-        public readonly int Id;
-
-        private Vector2 _position;
+        private Vector2 position;
         public Vector2 Position
         {
-            get => _position;
+            get => position;
             set
             {
-                if (_position != value)
+                if (position != value)
                 {
-                    _position = value;
-                    MarkDirtyColliders();
+                    position = value;
+                    Version++;
                 }
             }
         }
 
-        private float _rotation;
+        private float rotation;
         public float Rotation
         {
-            get => _rotation;
+            get => rotation;
             set
             {
-                if (_rotation != value)
+                if (rotation != value)
                 {
-                    _rotation = value;
-                    MarkDirtyColliders();
+                    rotation = value;
+                    Version++;
                 }
             }
         }
@@ -40,19 +37,18 @@ namespace YMM4Physics2D.Core.Bodies
         public float AngularVelocity;
 
         public Vector2 Force;
-        public float Torque;
 
-        private float _mass;
+        private float mass;
         public float Mass
         {
-            get => _mass;
+            get => mass;
             set
             {
                 if (value < 0f) value = 0f;
 
-                if (_mass != value)
+                if (mass != value)
                 {
-                    _mass = value;
+                    mass = value;
                     RecalculateMassData();
                 }
             }
@@ -65,138 +61,172 @@ namespace YMM4Physics2D.Core.Bodies
         public float LinearDamping { get; set; } = 0.05f;
         public float AngularDamping { get; set; } = 3.0f;
 
-        private BodyType _type;
+        private BodyType type;
         public BodyType Type
         {
-            get => _type;
+            get => type;
             set
             {
-                if (_type != value)
+                if (type != value)
                 {
-                    _type = value;
+                    type = value;
                     RecalculateMassData();
                 }
             }
         }
 
-        private readonly List<Collider> _colliders = [];
-        public IReadOnlyList<Collider> Colliders => _colliders;
+        private readonly List<Collider> colliders = [];
+        public IReadOnlyList<Collider> Colliders => colliders;
 
         public AABB WorldAABB { get; private set; }
-        public Vector2 VisualOffset { get; set; }
 
-        public bool IsActive { get; set; } = true;
-        public int StartFrame { get; set; } = 0;
-        public Action? OnReset { get; set; }
+        public int Version { get; private set; }
+
+        public Matrix3x2 Transform
+        {
+            get
+            {
+                var transform = Matrix3x2.CreateRotation(rotation);
+                transform.Translation = position;
+                return transform;
+            }
+        }
+
+        private AABB localBounds;
+        private float minThickness;
+        private bool shapeDirty = true;
+
+        public float MinThickness
+        {
+            get
+            {
+                UpdateLocalBounds();
+                return minThickness;
+            }
+        }
+
+        public Vector2 ImageCentroid { get; set; }
+
+        public Vector2 LocalCentroid { get; set; }
+
+        public object? Owner { get; set; }
+
+        public bool IsSpawning { get; set; }
+
+
+        public float Opacity { get; set; } = 1f;
+        public float FadeRate { get; set; }
+        public bool IsGhost { get; set; }
+        public bool IsFrozen { get; set; }
+        public float Presence { get; set; } = 1f;
+        public bool TouchingSolid { get; set; }
+        public List<long> InsideTriggers { get; } = [];
+
+        public bool IsActive => !IsSpawning && !IsGhost && Presence > 0f;
+
+        public bool IsParticle { get; init; }
 
         public RigidBody(Vector2 position, float mass, BodyType bodyType)
         {
-            Id = Interlocked.Increment(ref _nextId);
-            _position = position;
-            _type = bodyType;
-            _mass = System.Math.Max(0f, mass);
+            this.position = position;
+            type = bodyType;
+            this.mass = Math.Max(0f, mass);
             WorldAABB = new AABB(position, position);
 
             RecalculateMassData();
         }
 
-        public void AddForce(Vector2 force)
-        {
-            if (Type == BodyType.Static) return;
-            Force += force;
-        }
-
         public void ClearForces()
         {
             Force = Vector2.Zero;
-            Torque = 0f;
         }
 
-        public void AddCollider(Collider collider)
-        {
-            if (collider == null) return;
-
-            if (!_colliders.Contains(collider))
-            {
-                collider.SetBody(this);
-                _colliders.Add(collider);
-                collider.MarkDirty();
-                UpdateWorldAABB();
-                RecalculateMassData();
-            }
-        }
-
-        public void AddColliders(IEnumerable<Collider> colliders)
+        public void AddColliders(IEnumerable<Collider> newColliders)
         {
             bool addedAny = false;
-            foreach (var collider in colliders)
+            foreach (var collider in newColliders)
             {
-                if (collider != null && !_colliders.Contains(collider))
+                if (collider != null && !colliders.Contains(collider))
                 {
                     collider.SetBody(this);
-                    _colliders.Add(collider);
-                    collider.MarkDirty();
+                    colliders.Add(collider);
                     addedAny = true;
                 }
             }
 
             if (addedAny)
             {
+                shapeDirty = true;
                 UpdateWorldAABB();
                 RecalculateMassData();
             }
-        }
-
-        public void RemoveCollider(Collider collider)
-        {
-            if (_colliders.Remove(collider))
-            {
-                UpdateWorldAABB();
-                RecalculateMassData();
-            }
-        }
-
-        public void ClearColliders()
-        {
-            _colliders.Clear();
-            UpdateWorldAABB();
-            ComputeInertia();
         }
 
         public void UpdateWorldAABB()
         {
-            if (_colliders.Count == 0)
+            if (colliders.Count == 0)
             {
-                WorldAABB = new AABB(_position, _position);
+                WorldAABB = new AABB(position, position);
                 return;
             }
 
-            Vector2 min = new(float.MaxValue, float.MaxValue);
-            Vector2 max = new(float.MinValue, float.MinValue);
-
-            foreach (var col in _colliders)
+            if (IsParticle && colliders[0] is CircleCollider circle)
             {
-                AABB box = col.WorldAABB;
-                min = Vector2.Min(min, box.Min);
-                max = Vector2.Max(max, box.Max);
+                Vector2 center = position + circle.Offset;
+                Vector2 extent = new(circle.Radius);
+                WorldAABB = new AABB(center - extent, center + extent);
+                return;
             }
 
-            WorldAABB = new AABB(min, max);
+            UpdateLocalBounds();
+
+            var transform = Transform;
+            Vector2 a = Vector2.Transform(localBounds.Min, transform);
+            Vector2 b = Vector2.Transform(new Vector2(localBounds.Max.X, localBounds.Min.Y), transform);
+            Vector2 c = Vector2.Transform(localBounds.Max, transform);
+            Vector2 d = Vector2.Transform(new Vector2(localBounds.Min.X, localBounds.Max.Y), transform);
+            WorldAABB = new AABB(Vector2.Min(Vector2.Min(a, b), Vector2.Min(c, d)), Vector2.Max(Vector2.Max(a, b), Vector2.Max(c, d)));
+        }
+
+        internal void MarkShapeDirty()
+        {
+            shapeDirty = true;
+        }
+
+        private void UpdateLocalBounds()
+        {
+            if (!shapeDirty) return;
+            shapeDirty = false;
+
+            Vector2 min = new(float.MaxValue);
+            Vector2 max = new(float.MinValue);
+            float thickness = float.MaxValue;
+            foreach (var col in colliders)
+            {
+                AABB box = col.LocalBounds;
+                min = Vector2.Min(min, box.Min);
+                max = Vector2.Max(max, box.Max);
+                thickness = MathF.Min(thickness, col.MinWidth);
+            }
+
+            localBounds = colliders.Count > 0 ? new AABB(min, max) : default;
+            minThickness = colliders.Count > 0 ? thickness : float.MaxValue;
         }
 
         public void ComputeInertia()
         {
-            if (Type == BodyType.Static || _mass <= 0.0001f || _colliders.Count == 0)
+            if (Type == BodyType.Static || IsParticle || mass <= 0.0001f || colliders.Count == 0)
             {
                 InvInertia = 0f;
                 return;
             }
 
+            Span<float> areas = colliders.Count <= 64 ? stackalloc float[colliders.Count] : new float[colliders.Count];
             float totalArea = 0f;
-
-            foreach (var col in _colliders)
+            for (int i = 0; i < colliders.Count; i++)
             {
-                totalArea += col.CalculateArea();
+                areas[i] = colliders[i].CalculateArea();
+                totalArea += areas[i];
             }
 
             if (totalArea < 0.0001f)
@@ -206,14 +236,9 @@ namespace YMM4Physics2D.Core.Bodies
             }
 
             float totalInertia = 0f;
-
-            foreach (var col in _colliders)
+            for (int i = 0; i < colliders.Count; i++)
             {
-                float area = col.CalculateArea();
-                float areaRatio = area / totalArea;
-                float partMass = Mass * areaRatio;
-
-                totalInertia += col.CalculateInertia(partMass);
+                totalInertia += colliders[i].CalculateInertia(mass * areas[i] / totalArea);
             }
 
             InvInertia = totalInertia > 0f ? 1.0f / totalInertia : 0f;
@@ -221,23 +246,15 @@ namespace YMM4Physics2D.Core.Bodies
 
         private void RecalculateMassData()
         {
-            if (Type == BodyType.Static || _mass <= 0.0001f)
+            if (Type == BodyType.Static || mass <= 0.0001f)
             {
                 InvMass = 0f;
                 InvInertia = 0f;
             }
             else
             {
-                InvMass = 1.0f / _mass;
+                InvMass = 1.0f / mass;
                 ComputeInertia();
-            }
-        }
-
-        private void MarkDirtyColliders()
-        {
-            foreach (var collider in _colliders)
-            {
-                collider?.MarkDirty();
             }
         }
     }

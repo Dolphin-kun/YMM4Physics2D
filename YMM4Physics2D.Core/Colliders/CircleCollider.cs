@@ -4,46 +4,35 @@ namespace YMM4Physics2D.Core.Colliders
 {
     public class CircleCollider : Collider
     {
-        private Vector2 _worldCenter;
+        private Vector2 worldCenter;
+        private float radius;
 
-        public float Radius { get; set; }
+        public float Radius
+        {
+            get => radius;
+            set
+            {
+                radius = value;
+                MarkDirty();
+            }
+        }
 
         public Vector2 WorldCenter
         {
             get
             {
-                if (IsDirty) UpdateCache();
-                return _worldCenter;
+                EnsureUpdated();
+                return worldCenter;
             }
         }
 
         public CircleCollider(float radius, Vector2 offset = default)
         {
-            ShapeType = ShapeType.Circle;
             Radius = radius;
             Offset = offset;
         }
 
-        public void SetRadius(float radius)
-        {
-            Radius = radius;
-            MarkDirty();
-        }
-
-        public override void RecomputeAABB()
-        {
-            if (IsDirty)
-            {
-                UpdateCache();
-                return;
-            }
-
-            WorldAABB = new AABB
-            {
-                Min = new Vector2(_worldCenter.X - Radius, _worldCenter.Y - Radius),
-                Max = new Vector2(_worldCenter.X + Radius, _worldCenter.Y + Radius)
-            };
-        }
+        public override float MinWidth => Radius * 2f;
 
         public override float CalculateArea()
         {
@@ -52,33 +41,20 @@ namespace YMM4Physics2D.Core.Colliders
 
         public override float CalculateInertia(float mass)
         {
-            return 0.5f * mass * Radius * Radius;
+            return mass * (0.5f * Radius * Radius + Offset.LengthSquared());
         }
 
-        private void UpdateCache()
+        protected override AABB ComputeLocalBounds()
         {
-            if (Body == null)
-            {
-                _worldCenter = Offset;
-            }
-            else
-            {
-                float rotation = Body.Rotation;
-                Vector2 position = Body.Position;
+            Vector2 extent = new(Radius);
+            return new AABB(Offset - extent, Offset + extent);
+        }
 
-                Matrix3x2 transform = Matrix3x2.CreateRotation(rotation);
-                transform.Translation = position;
-
-                _worldCenter = Vector2.Transform(Offset, transform);
-            }
-
-            WorldAABB = new AABB
-            {
-                Min = new Vector2(_worldCenter.X - Radius, _worldCenter.Y - Radius),
-                Max = new Vector2(_worldCenter.X + Radius, _worldCenter.Y + Radius)
-            };
-
-            IsDirty = false;
+        protected override AABB UpdateWorld(in Matrix3x2 transform)
+        {
+            worldCenter = Vector2.Transform(Offset, transform);
+            Vector2 extent = new(Radius);
+            return new AABB(worldCenter - extent, worldCenter + extent);
         }
     }
 }

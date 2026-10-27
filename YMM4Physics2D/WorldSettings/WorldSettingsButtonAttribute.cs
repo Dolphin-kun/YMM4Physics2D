@@ -16,11 +16,17 @@ namespace YMM4Physics2D.WorldSettings
         {
             var editor = (WorldSettingsButton)control;
             editor.SetBinding(WorldSettingsButton.IsOpenProperty, ItemPropertiesBinding.Create2(itemProperties));
+            editor.WorldIdProvider = () => itemProperties
+                .Select(p => p.PropertyOwner)
+                .OfType<PhysicsEffect>()
+                .Select(effect => (int?)(int)effect.WorldId)
+                .FirstOrDefault();
         }
 
         public override void ClearBindings(FrameworkElement control)
         {
             BindingOperations.ClearBinding(control, WorldSettingsButton.IsOpenProperty);
+            ((WorldSettingsButton)control).WorldIdProvider = null;
         }
     }
 }

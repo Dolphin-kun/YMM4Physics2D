@@ -1,12 +1,14 @@
 ﻿using System.Numerics;
+using System.Runtime.CompilerServices;
 using YMM4Physics2D.Core.Bodies;
-using YMM4Physics2D.Core.Math;
+using YMM4Physics2D.Core.Geometry;
 
 namespace YMM4Physics2D.Core.Collision
 {
     public static class CollisionResolver
     {
-        public static void Resolve(in Manifold m, float minVelocity, float correctionPercent, float slop)
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        public static void Resolve(in Manifold m, float depth, float minVelocity, float correctionPercent, float slop)
         {
             RigidBody bodyA = m.BodyA;
             RigidBody bodyB = m.BodyB;
@@ -15,27 +17,52 @@ namespace YMM4Physics2D.Core.Collision
             if (invMassSum == 0f) return;
 
             Vector2 normal = m.Normal;
-            Vector2 contact = m.Contact1;
+            int count = m.ContactCount;
 
-            Vector2 rA = contact - bodyA.Position;
-            Vector2 rB = contact - bodyB.Position;
+            Span<Vector2> rAs = stackalloc Vector2[count];
+            Span<Vector2> rBs = stackalloc Vector2[count];
+            Span<Vector2> impulses = stackalloc Vector2[count];
+            Span<float> normalImpulses = stackalloc float[count];
 
-            Vector2 relativeVelocity = CalculateRelativeVelocity(bodyA, bodyB, rA, rB);
-            float velocityAlongNormal = Vector2.Dot(relativeVelocity, normal);
+            bool separating = true;
+            float share = 1f / count;
 
-            if (velocityAlongNormal > 0)
+            for (int i = 0; i < count; i++)
             {
-                return;
+                Vector2 contact = i == 0 ? m.Contact1 : m.Contact2;
+                rAs[i] = contact - bodyA.Position;
+                rBs[i] = contact - bodyB.Position;
+
+                Vector2 relativeVelocity = CalculateRelativeVelocity(bodyA, bodyB, rAs[i], rBs[i]);
+                float velocityAlongNormal = Vector2.Dot(relativeVelocity, normal);
+
+                if (velocityAlongNormal > 0) continue;
+                separating = false;
+
+                normalImpulses[i] = CalculateNormalImpulse(bodyA, bodyB, rAs[i], rBs[i], normal, minVelocity, velocityAlongNormal, invMassSum) * share;
+                impulses[i] = normal * normalImpulses[i];
             }
 
-            // 反発
-            float normalImpulse = ApplyNormalImpulse(bodyA, bodyB, rA, rB, normal, minVelocity, velocityAlongNormal, invMassSum);
+            if (separating) return;
 
-            // 摩擦
-            ApplyFrictionImpulse(bodyA, bodyB, rA, rB, normal, normalImpulse, invMassSum);
+            for (int i = 0; i < count; i++)
+            {
+                ApplyImpulse(bodyA, bodyB, rAs[i], rBs[i], impulses[i]);
+            }
 
-            // めり込み解消
-            ApplyPositionalCorrection(bodyA, bodyB, normal, correctionPercent, slop, m.Depth, invMassSum);
+            for (int i = 0; i < count; i++)
+            {
+                impulses[i] = normalImpulses[i] != 0f
+                    ? CalculateFrictionImpulse(bodyA, bodyB, rAs[i], rBs[i], normal, normalImpulses[i], invMassSum, share)
+                    : Vector2.Zero;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                ApplyImpulse(bodyA, bodyB, rAs[i], rBs[i], impulses[i]);
+            }
+
+            ApplyPositionalCorrection(bodyA, bodyB, normal, correctionPercent, slop, depth, invMassSum);
         }
 
         private static Vector2 CalculateRelativeVelocity(RigidBody bodyA, RigidBody bodyB, Vector2 rA, Vector2 rB)
@@ -45,7 +72,7 @@ namespace YMM4Physics2D.Core.Collision
             return velocityB - velocityA;
         }
 
-        private static float ApplyNormalImpulse(RigidBody bodyA, RigidBody bodyB, Vector2 rA, Vector2 rB, Vector2 normal, float minVelocity, float velocityAlongNormal, float invMassSum)
+        private static float CalculateNormalImpulse(RigidBody bodyA, RigidBody bodyB, Vector2 rA, Vector2 rB, Vector2 normal, float minVelocity, float velocityAlongNormal, float invMassSum)
         {
             float restitution = MathF.Min(bodyA.Restitution, bodyB.Restitution);
             if (MathF.Abs(velocityAlongNormal) < minVelocity)
@@ -54,37 +81,30 @@ namespace YMM4Physics2D.Core.Collision
             }
 
             float effectiveInvMass = CalculateEffectiveInvMass(bodyA, bodyB, rA, rB, normal, invMassSum);
-
-            float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / effectiveInvMass;
-            Vector2 impulse = normal * impulseMagnitude;
-
-            ApplyImpulse(bodyA, bodyB, rA, rB, impulse);
-            return impulseMagnitude;
+            return -(1.0f + restitution) * velocityAlongNormal / effectiveInvMass;
         }
 
-        private static void ApplyFrictionImpulse(RigidBody bodyA, RigidBody bodyB, Vector2 rA, Vector2 rB, Vector2 normal, float normalImpulseMagnitude, float invMassSum)
+        private static Vector2 CalculateFrictionImpulse(RigidBody bodyA, RigidBody bodyB, Vector2 rA, Vector2 rB, Vector2 normal, float normalImpulseMagnitude, float invMassSum, float share)
         {
             Vector2 relativeVelocity = CalculateRelativeVelocity(bodyA, bodyB, rA, rB);
             Vector2 tangent = relativeVelocity - (normal * Vector2.Dot(relativeVelocity, normal));
 
             if (tangent.LengthSquared() < 0.0001f)
-                return;
+                return Vector2.Zero;
 
             tangent = Vector2.Normalize(tangent);
             float velocityAlongTangent = Vector2.Dot(relativeVelocity, tangent);
             float effectiveInvMass = CalculateEffectiveInvMass(bodyA, bodyB, rA, rB, tangent, invMassSum);
-            float frictionImpulseMagnitude = -velocityAlongTangent / effectiveInvMass;
+            float frictionImpulseMagnitude = -velocityAlongTangent / effectiveInvMass * share;
 
             float mu = MathF.Sqrt(bodyA.Friction * bodyB.Friction);
             float maxFriction = MathF.Abs(normalImpulseMagnitude) * mu;
-            frictionImpulseMagnitude = System.Math.Clamp(
+            frictionImpulseMagnitude = Math.Clamp(
                 frictionImpulseMagnitude,
                 -maxFriction,
                 maxFriction);
 
-            Vector2 frictionImpulse = tangent * frictionImpulseMagnitude;
-
-            ApplyImpulse(bodyA, bodyB, rA, rB, frictionImpulse);
+            return tangent * frictionImpulseMagnitude;
         }
 
         private static void ApplyImpulse(RigidBody bodyA, RigidBody bodyB, Vector2 rA, Vector2 rB, Vector2 impulse)

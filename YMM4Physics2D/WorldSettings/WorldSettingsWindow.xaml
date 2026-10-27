@@ -5,6 +5,14 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:YMM4Physics2D.WorldSettings"
         mc:Ignorable="d"
-        Title="ワールド設定" Height="450" Width="800">
+        Title="ワールド設定"
+        Width="580" MinWidth="460"
+        Height="640" MinHeight="320"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip"
+        UseLayoutRounding="True"
+        Background="{DynamicResource {x:Static SystemColors.ControlBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.ControlTextBrushKey}}">
     <local:WorldSettingsView/>
 </Window>

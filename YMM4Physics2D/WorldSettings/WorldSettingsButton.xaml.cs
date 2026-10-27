@@ -6,6 +6,8 @@ namespace YMM4Physics2D.WorldSettings
 {
     public partial class WorldSettingsButton : UserControl, IPropertyEditorControl
     {
+        private static WorldSettingsWindow? openWindow;
+
         public bool IsOpen
         {
             get { return (bool)GetValue(IsOpenProperty); }
@@ -14,8 +16,12 @@ namespace YMM4Physics2D.WorldSettings
         public static readonly DependencyProperty IsOpenProperty =
             DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(WorldSettingsButton), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
 
+        public Func<int?>? WorldIdProvider { get; set; }
+
+#pragma warning disable CS0067
         public event EventHandler? BeginEdit;
         public event EventHandler? EndEdit;
+#pragma warning restore CS0067
 
         public WorldSettingsButton()
         {
@@ -24,11 +30,24 @@ namespace YMM4Physics2D.WorldSettings
 
         private void Button_Click(object sender, RoutedEventArgs e)
         {
-            var window = new WorldSettingsWindow
+            if (WorldIdProvider?.Invoke() is int worldId)
+            {
+                WorldSettings.Default.WorldId = worldId;
+            }
+
+            if (openWindow != null)
+            {
+                if (openWindow.WindowState == WindowState.Minimized) openWindow.WindowState = WindowState.Normal;
+                openWindow.Activate();
+                return;
+            }
+
+            openWindow = new WorldSettingsWindow
             {
                 Owner = Application.Current.MainWindow
             };
-            window.Show();
+            openWindow.Closed += (_, _) => openWindow = null;
+            openWindow.Show();
         }
     }
 }
