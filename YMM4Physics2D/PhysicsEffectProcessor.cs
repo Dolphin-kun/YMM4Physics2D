@@ -1,8 +1,8 @@
-﻿using System.Numerics;
+﻿using System.ComponentModel;
+using System.Numerics;
 using Vortice.Direct2D1;
-using YMM4Physics2D.Core.Bodies;
 using YMM4Physics2D.Core.Controllers;
-using YMM4Physics2D.Core.Core;
+using YMM4Physics2D.Core.World;
 using YukkuriMovieMaker.Commons;
 using YukkuriMovieMaker.Player.Video;
 
@@ -12,101 +12,146 @@ namespace YMM4Physics2D
     {
         private readonly IGraphicsDevicesAndContext devices;
         private readonly PhysicsEffect item;
+        private readonly RigidBodyController controller;
+        private readonly BodyParameterProvider parameterProvider;
+        private readonly Func<TrackSettings> settingsProvider;
+
         private ID2D1Image? input;
-        private ID2D1CommandList? _outputCommandList;
+        private WorldConfig? worldConfig;
+        private int worldConfigVersion = -1;
+        private int worldConfigId = -1;
+        private bool isPhysicsOutput;
+        private bool errorLogged;
 
-        private RigidBodyController? _controller;
-
-        public ID2D1Image Output => _outputCommandList ?? input ?? throw new NullReferenceException(nameof(input) + " is null");
+        public ID2D1Image Output => (isPhysicsOutput ? controller.Output : null) ?? input ?? throw new InvalidOperationException("入力画像が設定されていません");
 
         public PhysicsEffectProcessor(IGraphicsDevicesAndContext devices, PhysicsEffect item)
         {
             this.devices = devices;
             this.item = item;
+
+            controller = new RigidBodyController(item);
+            parameterProvider = GetParameters;
+            settingsProvider = () => new TrackSettings(item.BodyType, item.IsSeparate, item.BodyName, null, (int)item.FluidResolution, (float)item.CollisionMargin);
+
+            item.PropertyChanged += Item_PropertyChanged;
         }
 
         public DrawDescription Update(EffectDescription effectDescription)
         {
-            var drawDesc = effectDescription.DrawDescription;
-            var currentZoom = drawDesc.Zoom;
-
-            var itemFrame = effectDescription.ItemPosition.Frame;
-            var timelineFrame = effectDescription.TimelinePosition.Frame;
-            var length = effectDescription.ItemDuration.Frame;
-            var fps = effectDescription.FPS;
-
-            var worldId = (int)item.WorldId;
-            var type = item.BodyType;
-            var mass = (float)item.Mass.GetValue(itemFrame, length, fps);
-            var restitution = (float)item.Restitution.GetValue(itemFrame, length, fps);
-            var friction = (float)item.Friction.GetValue(itemFrame, length, fps);
-            var linearDamping = (float)item.LinearDamping.GetValue(itemFrame, length, fps);
-            var angularDamping = (float)item.AngularDamping.GetValue(itemFrame, length, fps);
-            var simplifyTolerance = (float)item.SimplifyTolerance.GetValue(itemFrame, length, fps);
-            var isSeparate = item.IsSeparate;
-
-            var config = WorldSettings.WorldSettings.Default.Configs.FirstOrDefault(c => c.Id == worldId);
-            if (config != null) PhysicsManager.UpdateWorldSettings(worldId, config, effectDescription.ScreenSize);
-
-            var targetPos = new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y);
-            var targetRot = drawDesc.Rotation.Z;
-
-            if (_controller == null && input != null)
+            try
             {
-                _controller = new RigidBodyController(worldId, config, targetPos);
+                return UpdateCore(effectDescription);
             }
-
-            if (_controller == null) return drawDesc;
-
-            _controller.SetWorld(worldId, config);
-            _controller.UpdateBodyProperties(mass, restitution, friction, linearDamping, angularDamping);
-            _controller.SyncShape(devices.DeviceContext, input, currentZoom, simplifyTolerance: simplifyTolerance, separateParts: isSeparate);
-
-            if (type == BodyType.Static)
+            catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                float dt = 1.0f / fps;
-
-                foreach (var body in _controller.Bodies)
+                isPhysicsOutput = false;
+                if (!errorLogged)
                 {
-                    Vector2 positionDiff = targetPos - body.Position;
-
-                    if (dt > 0)
-                    {
-                        body.LinearVelocity = positionDiff / dt;
-
-                        float rotationDiff = targetRot - body.Rotation;
-                        body.AngularVelocity = rotationDiff / dt;
-                    }
-
-                    body.Position = targetPos;
-                    body.Rotation = targetRot;
+                    errorLogged = true;
+                    Log.Default.Write("物理演算エフェクトの処理中にエラーが発生しました", exception);
                 }
+                return effectDescription.DrawDescription;
             }
+        }
 
-            _controller.Step(timelineFrame, itemFrame, fps, targetPos, targetRot, type);
+        private DrawDescription UpdateCore(EffectDescription effectDescription)
+        {
+            var drawDesc = effectDescription.DrawDescription;
 
-            _outputCommandList?.Dispose();
-            _outputCommandList = devices.DeviceContext.CreateCommandList();
-
-            using (var recorder = devices.D2D.Device.CreateDeviceContext(DeviceContextOptions.None))
+            if (input == null)
             {
-                recorder.Target = _outputCommandList;
-                recorder.BeginDraw();
-                recorder.Clear(null);
-
-                _controller.Draw(recorder, input);
-
-                recorder.EndDraw();
+                isPhysicsOutput = false;
+                controller.Skip(new ControllerInput
+                {
+                    InputIndex = effectDescription.InputIndex,
+                    InputCount = effectDescription.InputCount,
+                    GroupIndex = effectDescription.GroupIndex,
+                    ParameterProvider = parameterProvider,
+                });
+                return drawDesc;
             }
-            _outputCommandList.Close();
 
-            if (_controller.Bodies.Count == 0) return drawDesc;
+            int itemFrame = effectDescription.ItemPosition.Frame;
+            int length = effectDescription.ItemDuration.Frame;
+            int fps = effectDescription.FPS;
+            int worldId = (int)item.WorldId;
+
+            var settings = WorldSettings.WorldSettings.Default;
+            int settingsVersion = settings.Version;
+            if (settingsVersion != worldConfigVersion || worldId != worldConfigId)
+            {
+                worldConfig = settings.GetConfigSnapshot(worldId);
+                worldConfigVersion = settingsVersion;
+                worldConfigId = worldId;
+            }
+
+            var data = new ControllerInput
+            {
+                SceneId = effectDescription.SceneId,
+                WorldId = worldId,
+                WorldParameters = WorldParameters.Create(worldConfig, effectDescription.ScreenSize, fps),
+                TimelineFrame = effectDescription.TimelinePosition.Frame,
+                LocalFrame = itemFrame,
+                Length = length,
+                Layer = effectDescription.Layer,
+                GroupIndex = effectDescription.GroupIndex,
+                InputIndex = effectDescription.InputIndex,
+                InputCount = effectDescription.InputCount,
+                IsPaused = effectDescription.Usage == TimelineSourceUsage.Paused,
+                BodyType = item.BodyType,
+                IsSeparate = item.IsSeparate,
+                CollisionMargin = (float)item.CollisionMargin,
+                FluidResolution = (int)item.FluidResolution,
+                FluidSmoothness = (float)item.FluidSmoothness.GetValue(itemFrame, length, fps) / 100f,
+                FluidGloss = (float)item.FluidGloss.GetValue(itemFrame, length, fps) / 100f,
+                ShapeUpdateMode = item.ShapeUpdateMode,
+                SimplifyTolerance = (float)item.SimplifyTolerance.GetValue(itemFrame, length, fps),
+                Observation = new TrackObservation(
+                    new Vector2(drawDesc.Draw.X, drawDesc.Draw.Y),
+                    drawDesc.Rotation.Z * MathF.PI / 180f,
+                    drawDesc.Zoom,
+                    drawDesc.Invert,
+                    drawDesc.CenterPoint),
+                Parameters = GetParameters(itemFrame, length, fps),
+                ParameterProvider = parameterProvider,
+                SettingsProvider = settingsProvider,
+                InterpolationMode = drawDesc.ZoomInterpolationMode,
+                Name = item.BodyName,
+            };
+
+            isPhysicsOutput = controller.Update(devices.DeviceContext, input, data);
+            if (!isPhysicsOutput) return drawDesc;
 
             return drawDesc with
             {
                 Draw = new Vector3(0, 0, drawDesc.Draw.Z),
-                Rotation = new Vector3(0, 0, 0)
+                Zoom = Vector2.One,
+                Rotation = Vector3.Zero,
+                Invert = false,
             };
+        }
+
+        private BodyParameters GetParameters(int frame, int length, int fps)
+        {
+            bool attraction = item.IsAttractionEnabled;
+            return new BodyParameters(
+                (float)item.Mass.GetValue(frame, length, fps),
+                (float)item.Restitution.GetValue(frame, length, fps),
+                (float)item.Friction.GetValue(frame, length, fps),
+                (float)item.LinearDamping.GetValue(frame, length, fps),
+                (float)item.AngularDamping.GetValue(frame, length, fps),
+                attraction ? (float)item.Attraction.GetValue(frame, length, fps) * 100f : 0f,
+                attraction ? (float)item.AttractionRange.GetValue(frame, length, fps) : 0f,
+                (float)item.FluidViscosity.GetValue(frame, length, fps) / 100f,
+                (float)item.FluidCohesion.GetValue(frame, length, fps) / 100f,
+                (float)item.FluidDrying.GetValue(frame, length, fps) / 100f);
+        }
+
+        private void Item_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(PhysicsEffect.IsOpen)) return;
+            controller.NotifySettingsChanged();
         }
 
         public void SetInput(ID2D1Image? input)
@@ -121,11 +166,8 @@ namespace YMM4Physics2D
 
         public void Dispose()
         {
-            _controller?.Dispose();
-            _controller = null;
-
-            _outputCommandList?.Dispose();
-            _outputCommandList = null;
+            item.PropertyChanged -= Item_PropertyChanged;
+            controller.Dispose();
         }
     }
 }

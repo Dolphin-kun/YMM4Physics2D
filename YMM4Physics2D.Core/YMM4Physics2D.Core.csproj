@@ -6,24 +6,14 @@
 		<Nullable>enable</Nullable>
 		<UseWPF>true</UseWPF>
 
-		<Version>1.0.0</Version>
+		<Version>2.0.0</Version>
 
-		<!--Pdb内にソースコードのフルパスを含めない-->
 		<RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</RepoRoot>
 		<PathMap>$(RepoRoot)=.</PathMap>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 	</PropertyGroup>
 
 	<ItemGroup>
-		<Reference Include="YukkuriMovieMaker">
-			<HintPath>$(YMM4DirPath)YukkuriMovieMaker.dll</HintPath>
-		</Reference>
-		<Reference Include="YukkuriMovieMaker.Controls">
-			<HintPath>$(YMM4DirPath)YukkuriMovieMaker.Controls.dll</HintPath>
-		</Reference>
-		<Reference Include="YukkuriMovieMaker.Plugin">
-			<HintPath>$(YMM4DirPath)YukkuriMovieMaker.Plugin.dll</HintPath>
-		</Reference>
 		<Reference Include="SharpGen.Runtime">
 			<HintPath>$(YMM4DirPath)SharpGen.Runtime.dll</HintPath>
 		</Reference>
@@ -41,9 +31,7 @@
 		</Reference>
 	</ItemGroup>
 
-	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
-		<Exec Command="mkdir &quot;$(YMM4DirPath)user\plugin\$(ProjectName)&quot; &gt; NUL 2&gt;&amp;1&#xD;&#xA;copy &quot;$(TargetPath)&quot; &quot;$(YMM4DirPath)user\plugin\$(ProjectName)\&quot;" />
+	<Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(SkipDeploy)' != 'true'">
+		<Exec Command="mkdir &quot;$(YMM4DirPath)user\plugin\YMM4Physics2D&quot; &gt; NUL 2&gt;&amp;1&#xD;&#xA;copy &quot;$(TargetPath)&quot; &quot;$(YMM4DirPath)user\plugin\YMM4Physics2D\&quot;" />
 	</Target>
-
-
 </Project>

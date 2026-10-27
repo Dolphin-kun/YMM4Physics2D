@@ -1,4 +1,6 @@
 <Solution>
   <Project Path="YMM4Physics2D.Core/YMM4Physics2D.Core.csproj" />
   <Project Path="YMM4Physics2D/YMM4Physics2D.csproj" />
+  <Project Path="YMM4Physics2D.Joints/YMM4Physics2D.Joints.csproj" />
+  <Project Path="YMM4Physics2D.Areas/YMM4Physics2D.Areas.csproj" />
 </Solution>

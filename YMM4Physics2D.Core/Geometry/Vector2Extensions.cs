@@ -1,13 +1,12 @@
 ﻿using System.Numerics;
 
-namespace YMM4Physics2D.Core.Math
+namespace YMM4Physics2D.Core.Geometry
 {
     public static class Vector2Extensions
     {
         public static Vector2 Rotate(this Vector2 v, float radians)
         {
-            float cos = (float)System.Math.Cos(radians);
-            float sin = (float)System.Math.Sin(radians);
+            var (sin, cos) = MathF.SinCos(radians);
 
             return new Vector2(
                 v.X * cos - v.Y * sin,

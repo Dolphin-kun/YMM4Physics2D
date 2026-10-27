@@ -1,5 +1,6 @@
-﻿using System.ComponentModel;
-using System.Numerics;
+﻿using System.Numerics;
+using System.Runtime.CompilerServices;
+using Newtonsoft.Json;
 using YMM4Physics2D.Core.World;
 using YukkuriMovieMaker.Plugin;
 
@@ -7,6 +8,12 @@ namespace YMM4Physics2D.WorldSettings
 {
     internal class WorldSettings : SettingsBase<WorldSettings>
     {
+        private static readonly WorldConfig DefaultConfig = new();
+
+        private readonly Lock configLock = new();
+        private int worldId = 0;
+        private int version;
+
         public override SettingsCategory Category => SettingsCategory.None;
         public override string Name => "ワールド設定";
 
@@ -15,11 +22,9 @@ namespace YMM4Physics2D.WorldSettings
 
         public List<WorldConfig> Configs { get; set; } = [];
 
-        // ワールドID
-        private int worldId = 0;
         public int WorldId
-        { 
-            get => worldId; 
+        {
+            get => worldId;
             set
             {
                 if (Set(ref worldId, value))
@@ -29,181 +34,179 @@ namespace YMM4Physics2D.WorldSettings
             }
         }
 
-        private WorldConfig GetCurrentConfig()
-        {
-            var config = Configs.FirstOrDefault(c => c.Id == worldId);
+        [JsonIgnore]
+        public int Version => Volatile.Read(ref version);
 
-            if(config == null)
+        public WorldConfig? GetConfigSnapshot(int id)
+        {
+            lock (configLock)
             {
-                config = new WorldConfig
-                {
-                    Id = worldId
-                };
-                Configs.Add(config);
+                return Configs.FirstOrDefault(c => c.Id == id)?.Clone();
             }
-            return config;
         }
 
-        // 重力
+        [JsonIgnore]
         public Vector2 Gravity
         {
-            get => GetCurrentConfig().Gravity;
+            get => FindCurrentConfig().Gravity;
             set
             {
-                var config = GetCurrentConfig();
-                if (config.Gravity != value)
-                {
-                    config.Gravity = value;
-                    OnPropertyChanged(nameof(Gravity));
-                    OnPropertyChanged(nameof(GravityX));
-                    OnPropertyChanged(nameof(GravityY));
-                    Save();
-                }
+                var config = GetOrCreateCurrentConfig();
+                if (config.Gravity == value) return;
+
+                config.Gravity = value;
+                Interlocked.Increment(ref version);
+                OnPropertyChanged(nameof(Gravity));
+                OnPropertyChanged(nameof(GravityX));
+                OnPropertyChanged(nameof(GravityY));
+                OnPropertyChanged(nameof(GravityStrength));
+                OnPropertyChanged(nameof(GravityAngle));
+                Save();
             }
         }
-        [DefaultValue(0f)]
+
+        [JsonIgnore]
         public float GravityX { get => Gravity.X / 100f; set => Gravity = new Vector2(value * 100f, Gravity.Y); }
-        [DefaultValue(9.8f)]
+
+        [JsonIgnore]
         public float GravityY { get => Gravity.Y / 100f; set => Gravity = new Vector2(Gravity.X, value * 100f); }
 
-        // 画面サイズの壁
+        [JsonIgnore]
+        public float GravityStrength
+        {
+            get => Gravity.Length() / 100f;
+            set
+            {
+                float angle = GravityAngle;
+                GetOrCreateCurrentConfig().GravityAngle = angle;
+                Gravity = CreateGravity(angle, Math.Max(0f, value));
+            }
+        }
+
+        [JsonIgnore]
+        public float GravityAngle
+        {
+            get
+            {
+                var gravity = Gravity;
+                if (gravity.LengthSquared() < 1e-6f) return FindCurrentConfig().GravityAngle;
+
+                return MathF.Round(MathF.Atan2(-gravity.X, gravity.Y) * 180f / MathF.PI, 2);
+            }
+            set
+            {
+                var config = GetOrCreateCurrentConfig();
+                if (config.GravityAngle != value)
+                {
+                    config.GravityAngle = value;
+                    Interlocked.Increment(ref version);
+                    OnPropertyChanged(nameof(GravityAngle));
+                }
+                Gravity = CreateGravity(value, Gravity.Length() / 100f);
+            }
+        }
+
+        [JsonIgnore]
         public bool EnableWalls
         {
-            get => GetCurrentConfig().EnableWalls;
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.EnableWalls != value)
-                {
-                    config.EnableWalls = value;
-                    OnPropertyChanged(nameof(EnableWalls));
-                    Save();
-                }
-            }
+            get => FindCurrentConfig().EnableWalls;
+            set => Update(value, c => c.EnableWalls, (c, v) => c.EnableWalls = v);
         }
 
-        // スナップショット間隔
-        [DefaultValue(60)]
+        [JsonIgnore]
         public int SnapshotInterval
         {
-            get => GetCurrentConfig().SnapshotInterval;
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.SnapshotInterval != value)
-                {
-                    config.SnapshotInterval = value;
-                    OnPropertyChanged(nameof(SnapshotInterval));
-                    Save();
-                }
-            }
+            get => FindCurrentConfig().SnapshotInterval;
+            set => Update(value, c => c.SnapshotInterval, (c, v) => c.SnapshotInterval = v);
         }
 
-        // 衝突の解決回数
-        [DefaultValue(4)]
+        [JsonIgnore]
         public int Iterations
-        { 
-            get => GetCurrentConfig().Iterations;  
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.Iterations != value)
-                {
-                    config.Iterations = value;
-                    OnPropertyChanged(nameof(Iterations));
-                    Save();
-                }
-            }
+        {
+            get => FindCurrentConfig().Iterations;
+            set => Update(value, c => c.Iterations, (c, v) => c.Iterations = v);
         }
 
-        // 移動減衰
-        [DefaultValue(0.05f)]
-        public float LinearDamping 
-        { 
-            get => GetCurrentConfig().LinearDamping;
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.LinearDamping != value)
-                {
-                    config.LinearDamping = value;
-                    OnPropertyChanged(nameof(LinearDamping));
-                    Save();
-                }
-            }
-        }
-
-        // 回転減衰
-        [DefaultValue(3.0f)]
-        public float AngularDamping 
-        { 
-            get => GetCurrentConfig().AngularDamping;
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.AngularDamping != value)
-                {
-                    config.AngularDamping = value;
-                    OnPropertyChanged(nameof(AngularDamping));
-                    Save();
-                }
-            }
-        }
-
-        // 跳ね返り処理の無視
-        [DefaultValue(1.0f)]
+        [JsonIgnore]
         public float MinVelocityForRestitution
         {
-            get => GetCurrentConfig().MinVelocityForRestitution;
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.MinVelocityForRestitution != value)
-                {
-                    config.MinVelocityForRestitution = value;
-                    OnPropertyChanged(nameof(MinVelocityForRestitution));
-                    Save();
-                }
-            }
+            get => FindCurrentConfig().MinVelocityForRestitution;
+            set => Update(value, c => c.MinVelocityForRestitution, (c, v) => c.MinVelocityForRestitution = v);
         }
 
-        // めり込み解消割合
-        [DefaultValue(0.4f)]
+        [JsonIgnore]
         public float PositionCorrectionPercent
         {
-            get => GetCurrentConfig().PositionCorrectionPercent;
-            set
-            {
-                var config = GetCurrentConfig();
-                if (config.PositionCorrectionPercent != value)
-                {
-                    config.PositionCorrectionPercent = value;
-                    OnPropertyChanged(nameof(PositionCorrectionPercent));
-                    Save();
-                }
-            }
+            get => FindCurrentConfig().PositionCorrectionPercent;
+            set => Update(value, c => c.PositionCorrectionPercent, (c, v) => c.PositionCorrectionPercent = v);
         }
 
-        // 許容めり込み深さ
-        [DefaultValue(1.0f)]
+        [JsonIgnore]
         public float PositionCorrectionSlop
         {
-            get => GetCurrentConfig().PositionCorrectionSlop * 100f;
-            set
+            get => FindCurrentConfig().PositionCorrectionSlop * 100f;
+            set => Update(value / 100f, c => c.PositionCorrectionSlop, (c, v) => c.PositionCorrectionSlop = v);
+        }
+
+        public void ResetCurrentWorld()
+        {
+            lock (configLock)
             {
-                var config = GetCurrentConfig();
-                var val = value / 100f;
-                if (config.PositionCorrectionSlop != val)
-                {
-                    config.PositionCorrectionSlop = val;
-                    OnPropertyChanged(nameof(PositionCorrectionSlop));
-                    Save();
-                }
+                int index = Configs.FindIndex(c => c.Id == worldId);
+                var config = new WorldConfig { Id = worldId };
+                if (index >= 0) Configs[index] = config;
+                else Configs.Add(config);
             }
+
+            Interlocked.Increment(ref version);
+            OnPropertyChanged(string.Empty);
+            Save();
         }
 
         public override void Initialize()
         {
+        }
+
+        private WorldConfig FindCurrentConfig()
+        {
+            lock (configLock)
+            {
+                return Configs.FirstOrDefault(c => c.Id == worldId) ?? DefaultConfig;
+            }
+        }
+
+        private WorldConfig GetOrCreateCurrentConfig()
+        {
+            lock (configLock)
+            {
+                var config = Configs.FirstOrDefault(c => c.Id == worldId);
+                if (config == null)
+                {
+                    config = new WorldConfig { Id = worldId };
+                    Configs.Add(config);
+                }
+                return config;
+            }
+        }
+
+        private void Update<T>(T value, Func<WorldConfig, T> getter, Action<WorldConfig, T> setter, [CallerMemberName] string propertyName = "")
+        {
+            var config = GetOrCreateCurrentConfig();
+            if (EqualityComparer<T>.Default.Equals(getter(config), value)) return;
+
+            setter(config, value);
+            Interlocked.Increment(ref version);
+            OnPropertyChanged(propertyName);
+            Save();
+        }
+
+        private static Vector2 CreateGravity(float angle, float strength)
+        {
+            float radians = angle * MathF.PI / 180f;
+            var direction = new Vector2(-MathF.Sin(radians), MathF.Cos(radians));
+            var gravity = direction * strength * 100f;
+
+            return new Vector2(MathF.Round(gravity.X, 3), MathF.Round(gravity.Y, 3));
         }
     }
 }

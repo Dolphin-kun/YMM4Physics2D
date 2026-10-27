@@ -1,354 +1,889 @@
 ﻿using System.Numerics;
 using Vortice;
 using Vortice.Direct2D1;
-using Vortice.Mathematics;
 using YMM4Physics2D.Core.Bodies;
-using YMM4Physics2D.Core.Colliders;
-using YMM4Physics2D.Core.Core;
+using YMM4Physics2D.Core.Shapes;
 using YMM4Physics2D.Core.World;
 
 namespace YMM4Physics2D.Core.Controllers
 {
-    public class RigidBodyController : IDisposable
+    public sealed class ControllerInput
     {
-        private readonly List<RigidBody> _bodies = [];
-        public IReadOnlyList<RigidBody> Bodies => _bodies;
+        public Guid SceneId { get; init; }
+        public int WorldId { get; init; }
+        public WorldParameters WorldParameters { get; init; }
+        public int TimelineFrame { get; init; }
+        public int LocalFrame { get; init; }
+        public int Length { get; init; }
+        public int Layer { get; init; }
+        public int GroupIndex { get; init; }
+        public int InputIndex { get; init; }
+        public int InputCount { get; init; } = 1;
+        public bool IsPaused { get; init; }
+        public BodyType BodyType { get; init; }
+        public bool IsSeparate { get; init; }
+        public float CollisionMargin { get; init; }
+        public int FluidResolution { get; init; }
+        public ShapeUpdateMode ShapeUpdateMode { get; init; }
+        public float SimplifyTolerance { get; init; }
+        public TrackObservation Observation { get; init; }
+        public BodyParameters Parameters { get; init; }
+        public required BodyParameterProvider ParameterProvider { get; init; }
+        public Func<TrackSettings>? SettingsProvider { get; init; }
+        public float FluidSmoothness { get; init; } = 0.6f;
+        public float FluidGloss { get; init; } = 1f;
+        public InterpolationMode InterpolationMode { get; init; } = InterpolationMode.Linear;
+        public string Name { get; init; } = string.Empty;
+    }
 
-        private readonly Dictionary<int, ID2D1PathGeometry> _geometryCache = [];
+    public sealed partial class RigidBodyController(object owner) : IDisposable
+    {
+        private const int SecondaryMaxSteps = 2;
+        private static readonly long ObserverRefreshTicks = System.Diagnostics.Stopwatch.Frequency / 5;
 
-        private int _worldId = -1;
-        private bool _isInitialized = false;
-        private bool _disposed = false;
+        [ThreadStatic]
+        private static List<RigidBodyController>? deferredControllers;
 
-        private ID2D1Image? _lastInput;
-        private Vector2 _lastZoom;
-        private float _lastSimplifyTolerance;
-        private bool _lastSeparateParts;
+        private readonly object owner = owner;
 
-        private Vector2 _currentDrawPosition;
-        private float _currentDrawRotation;
-        private BodyType _currentBodyType;
-        private float _currentMass = 20.0f;
+        private const byte AlphaThreshold = 20;
 
-        public RigidBodyController(int worldId, WorldConfig? config, Vector2 position)
+        private const float MaskMargin = 2f;
+
+        private const int AtlasWidth = 4096;
+        private const int AtlasMaxHeight = 8192;
+        private const int AtlasPadding = 2;
+
+        private readonly ShapeReader reader = new();
+        private readonly TrackFrameResult result = new();
+
+        private PhysicsWorld? world;
+        private BodyTrack? track;
+        private bool isObserver;
+        private int observedFrame = int.MinValue;
+        private ID2D1Image? observedInput;
+        private long observedTimestamp;
+        private (Guid SceneId, int WorldId) worldKey;
+        private (int GroupIndex, int InputIndex) trackIndex;
+
+        private ID2D1Image? lastInput;
+        private RawRectF lastBounds;
+        private bool shapeDirty = true;
+
+        private ShapeVersion? maskShape;
+        private ID2D1Geometry?[] masks = [];
+        private ID2D1GeometryRealization?[] maskRealizations = [];
+        private float maskRealizationScale;
+        private RawRectF[] partBounds = [];
+
+        private ID2D1Bitmap1? atlas;
+        private RawRectF[] atlasCells = [];
+        private ShapeVersion? atlasShape;
+        private ID2D1Image? atlasInput;
+        private bool atlasUnavailable;
+
+        private ID2D1ImageBrush? brush;
+        private ID2D1Image? brushInput;
+        private InterpolationMode brushInterpolationMode;
+
+        private ID2D1StrokeStyle? lineStrokeStyle;
+        private readonly Dictionary<uint, ID2D1SolidColorBrush> lineBrushes = [];
+
+        private ID2D1Image? cacheCheckedInput;
+        private bool isInputCacheable;
+
+        private ID2D1CommandList? commandList;
+        private ID2D1Effect? outputEffect;
+        private Vortice.Direct2D1.Effects.AffineTransform2D? poseEffect;
+        private ID2D1Image? poseOutput;
+        private ID2D1Image? output;
+        private bool hasOutput;
+        private bool disposed;
+        private volatile bool disposeRequested;
+        private readonly Lock gate = new();
+
+        private readonly Lock deferredLock = new();
+        private ID2D1DeviceContext? deferredContext;
+        private ID2D1Image? deferredInput;
+        private int deferredFrame;
+        private InterpolationMode deferredInterpolationMode;
+
+        public ID2D1Image? Output => hasOutput ? output : null;
+
+        public void NotifySettingsChanged()
         {
-            _currentDrawPosition = position;
-            _currentDrawRotation = 0f;
-
-            JoinWorld(worldId, config);
+            shapeDirty = true;
+            track?.RequestParameterRefresh();
+            PhysicsManager.NotifySettingsChanged();
         }
 
-        public void Step(int timelineFrame, int itemFrame, double fps, Vector2 targetPos, float targetRot, BodyType type)
+        public bool Update(ID2D1DeviceContext context, ID2D1Image input, ControllerInput data)
         {
-            if (_disposed) return;
-
-            _currentDrawPosition = targetPos;
-            _currentDrawRotation = targetRot * MathF.PI / 180.0f;
-            _currentBodyType = type;
-
-            foreach (var body in _bodies)
+            try
             {
-                body.StartFrame = timelineFrame - itemFrame;
-
-                if (body.Type != type)
+                lock (gate)
                 {
-                    body.Type = type;
+                    if (disposeRequested) return false;
+                    return UpdateCore(context, input, data);
                 }
             }
-
-            if (!_isInitialized || itemFrame == 0)
+            finally
             {
-                foreach (var body in _bodies) body.OnReset?.Invoke();
-
-                PhysicsManager.StepWorld(_worldId, timelineFrame, fps);
-                _isInitialized = true;
-            }
-            else
-            {
-                if (type != BodyType.Static)
-                {
-                    PhysicsManager.StepWorld(_worldId, timelineFrame, fps);
-                }
+                TryDisposePending();
             }
         }
 
-        public void UpdateBodyProperties(float mass = 20.0f, float restitution = 0.5f, float friction = 0.5f, float linearDamping = 0.05f, float angularDamping = 3.0f)
+        private bool UpdateCore(ID2D1DeviceContext context, ID2D1Image input, ControllerInput data)
         {
-            _currentMass = mass;
+            bool isLast = data.InputIndex >= data.InputCount - 1;
 
-            PhysicsManager.Atomic(_worldId, (world) =>
+            if (world == null && PhysicsManager.IsUiThread) isObserver = true;
+            if (isObserver) return UpdateObserver(context, input, data);
+
+            fluidSmoothness = data.FluidSmoothness;
+            fluidGloss = data.FluidGloss;
+            fluidFrameRate = data.WorldParameters.Fps;
+            var (currentWorld, currentTrack) = EnsureTrack(data);
+            currentWorld.SetParameters(data.WorldParameters);
+            PhysicsManager.SweepIfDue();
+
+            if (currentWorld.IsSecondary(currentTrack, this))
             {
-                float massPerBody = (_bodies.Count > 0) ? mass / _bodies.Count : mass;
+                PhysicsManager.SetLastUpdate(data.SceneId, currentWorld, currentTrack, true);
+                bool updated = UpdateSecondary(context, input, data, currentWorld, currentTrack);
+                if (isLast) FlushDeferred(currentWorld, data.GroupIndex, data.TimelineFrame);
+                return updated;
+            }
+            PhysicsManager.SetLastUpdate(data.SceneId, currentWorld, currentTrack, false);
 
-                foreach (var body in _bodies)
-                {
-                    body.Mass = massPerBody;
-                    body.Restitution = restitution;
-                    body.Friction = friction;
-                    body.LinearDamping = linearDamping;
-                    body.AngularDamping = angularDamping;
-                }
+            var shape = CaptureShape(context, input, data, currentWorld, currentTrack, out bool replaced);
+
+            currentWorld.UpdateTrack(currentTrack, new TrackUpdate
+            {
+                StartFrame = data.TimelineFrame - data.LocalFrame,
+                Length = data.Length,
+                Layer = data.Layer,
+                LocalFrame = data.LocalFrame,
+                BodyType = data.BodyType,
+                IsSeparate = data.IsSeparate,
+                CollisionMargin = data.CollisionMargin,
+                FluidResolution = data.FluidResolution,
+                ShapeUpdateMode = data.ShapeUpdateMode,
+                Observation = data.Observation,
+                Parameters = data.Parameters,
+                ParameterProvider = data.ParameterProvider,
+                SettingsProvider = data.SettingsProvider,
+                Shape = shape,
+                ShapeReplaced = replaced,
+                Name = data.Name,
+            }, this);
+
+            if (!isLast && currentWorld.NeedsSimulation(currentTrack, this, data.TimelineFrame))
+            {
+                Defer(context, input, data);
+                return true;
+            }
+
+            bool rendered = Render(context, input, data.TimelineFrame, data.InterpolationMode);
+            if (isLast) FlushDeferred(currentWorld, data.GroupIndex, data.TimelineFrame);
+            return rendered;
+        }
+
+        private bool UpdateSecondary(ID2D1DeviceContext context, ID2D1Image input, ControllerInput data, PhysicsWorld currentWorld, BodyTrack currentTrack)
+        {
+            currentWorld.TryUpdateSecondary(currentTrack, new TrackUpdate
+            {
+                StartFrame = data.TimelineFrame - data.LocalFrame,
+                Length = data.Length,
+                Layer = data.Layer,
+                LocalFrame = data.LocalFrame,
+                BodyType = data.BodyType,
+                IsSeparate = data.IsSeparate,
+                CollisionMargin = data.CollisionMargin,
+                FluidResolution = data.FluidResolution,
+                ShapeUpdateMode = data.ShapeUpdateMode,
+                Observation = data.Observation,
+                Parameters = data.Parameters,
+                ParameterProvider = data.ParameterProvider,
+                Name = data.Name,
             });
+
+            if (!currentWorld.TryGetLatestResult(currentTrack, data.TimelineFrame, result, SecondaryMaxSteps)) return hasOutput;
+
+            SetOutput(context, Compose(context, input, data.InterpolationMode));
+            hasOutput = true;
+            return true;
         }
 
-        public void SyncShape(ID2D1DeviceContext context, ID2D1Image? input, Vector2 zoom, byte alphaThreshold = 20, bool separateParts = false, float simplifyTolerance = 1.5f)
+        private bool UpdateObserver(ID2D1DeviceContext context, ID2D1Image input, ControllerInput data)
         {
-            if (_disposed || input == null) return;
-
-            bool isInputChanged = (input != _lastInput);
-            bool isZoomChanged = (zoom != _lastZoom);
-            bool isToleranceChanged = (simplifyTolerance != _lastSimplifyTolerance);
-            bool isSeparateChanged = (separateParts != _lastSeparateParts);
-
-            if (isInputChanged || isZoomChanged || isToleranceChanged || isSeparateChanged || _bodies.Count == 0)
+            var newWorldKey = (data.SceneId, data.WorldId);
+            var newTrackIndex = (data.GroupIndex, data.InputIndex);
+            if (world == null || track == null || worldKey != newWorldKey || trackIndex != newTrackIndex)
             {
-                RebuildBodies(context, input, zoom, simplifyTolerance, alphaThreshold, separateParts);
+                if (world != null && track != null) world.Detach(track, this, remove: false);
 
-                _lastInput = input;
-                _lastZoom = zoom;
-                _lastSimplifyTolerance = simplifyTolerance;
-                _lastSeparateParts = separateParts;
+                world = null;
+                track = null;
+                worldKey = newWorldKey;
+                trackIndex = newTrackIndex;
+                observedFrame = int.MinValue;
+
+                if (PhysicsManager.TryAttachObserver(data.SceneId, data.WorldId, new TrackKey(owner, data.GroupIndex, data.InputIndex), this) is not { } attached) return false;
+                (world, track) = attached;
             }
+
+            PhysicsManager.SetLastUpdate(data.SceneId, world, track, true);
+
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (hasOutput && observedFrame == data.TimelineFrame &&
+                (ReferenceEquals(observedInput, input) || now - observedTimestamp < ObserverRefreshTicks))
+            {
+                return true;
+            }
+
+            if (!world.TryGetLatestResult(track, data.TimelineFrame, result, 0)) return hasOutput;
+
+            SetOutput(context, Compose(context, input, data.InterpolationMode));
+            hasOutput = true;
+            observedFrame = data.TimelineFrame;
+            observedInput = input;
+            observedTimestamp = now;
+            return true;
         }
 
-        public void Draw(ID2D1DeviceContext target, ID2D1Image image)
+        public void Skip(ControllerInput data)
         {
-            if (_bodies.Count == 0 || image == null) return;
-
-            var bounds = target.GetImageLocalBounds(image);
-            var topLeft = new Vector2(bounds.Left, bounds.Top);
-
-            if (!_lastSeparateParts)
+            try
             {
-                foreach (var body in _bodies)
+                lock (gate)
                 {
-                    Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
-
-                    Vector2 textureShift = -(body.VisualOffset + topLeft);
-                    Matrix3x2 textureMatrix = Matrix3x2.CreateTranslation(textureShift) * worldMatrix;
-
-                    target.Transform = textureMatrix;
-                    target.DrawImage(image);
+                    if (disposeRequested) return;
+                    if (data.InputIndex >= data.InputCount - 1 && world != null) FlushDeferred(world, data.GroupIndex, data.TimelineFrame);
                 }
             }
-            else
+            finally
             {
-                DrawSeparateParts(target, image, topLeft);
+                TryDisposePending();
             }
         }
 
-        private void DrawSeparateParts(ID2D1DeviceContext target, ID2D1Image image, Vector2 topLeft)
+        private void Defer(ID2D1DeviceContext context, ID2D1Image input, ControllerInput data)
         {
-            using var factory = target.Factory;
-
-            var layerParams = new LayerParameters1
+            ReleaseDeferred();
+            lock (deferredLock)
             {
-                ContentBounds = new RawRectF(-10000, -10000, 20000, 20000),
-                MaskTransform = Matrix3x2.Identity,
-                Opacity = 1f
-            };
+                deferredContext = context;
+                deferredInput = input.QueryInterface<ID2D1Image>();
+            }
+            deferredFrame = data.TimelineFrame;
+            deferredInterpolationMode = data.InterpolationMode;
 
-            foreach (var body in _bodies)
+            if (!hasOutput)
             {
-                if (!_geometryCache.TryGetValue(body.Id, out var geometry))
+                SetOutput(context, input);
+                hasOutput = true;
+            }
+
+            var list = deferredControllers ??= [];
+            if (!list.Contains(this)) list.Add(this);
+        }
+
+        private void FlushDeferred(PhysicsWorld currentWorld, int groupIndex, int frame)
+        {
+            var list = deferredControllers;
+            if (list == null || list.Count == 0) return;
+
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                var controller = list[i];
+                if (controller.disposed)
                 {
-                    geometry = CreateBodyGeometry(factory, body);
-                    if (geometry == null) continue;
-                    _geometryCache[body.Id] = geometry;
+                    list.RemoveAt(i);
+                    continue;
                 }
+                if (controller.world != currentWorld || !ReferenceEquals(controller.owner, owner) || controller.trackIndex.GroupIndex != groupIndex) continue;
 
-                Matrix3x2 worldMatrix = Matrix3x2.CreateRotation(body.Rotation) * Matrix3x2.CreateTranslation(body.Position);
-                Vector2 textureShift = -(body.VisualOffset + topLeft);
-                Matrix3x2 textureMatrix = Matrix3x2.CreateTranslation(textureShift) * worldMatrix;
-
-                using var layer = target.CreateLayer(null);
-
-                layerParams.GeometricMask = geometry;
-
-                target.Transform = worldMatrix;
-                target.PushLayer(layerParams, layer);
-
-                target.Transform = textureMatrix;
-                target.DrawImage(image);
-
-                target.PopLayer();
+                list.RemoveAt(i);
+                if (controller.deferredFrame == frame) controller.RenderDeferred();
+                else controller.ReleaseDeferred();
             }
         }
 
-        private static ID2D1PathGeometry? CreateBodyGeometry(ID2D1Factory factory, RigidBody body)
+        private void RenderDeferred()
         {
-            var pathGeometry = factory.CreatePathGeometry();
-            using var sink = pathGeometry.Open();
-            bool hasFigure = false;
-
-            foreach (var col in body.Colliders)
+            if (!gate.TryEnter())
             {
-                if (col is PolygonCollider poly && poly.LocalVertices.Length > 0)
+                ReleaseDeferred();
+                return;
+            }
+            try
+            {
+                RenderDeferredCore();
+            }
+            finally
+            {
+                gate.Exit();
+            }
+            TryDisposePending();
+        }
+
+        private void RenderDeferredCore()
+        {
+            ID2D1DeviceContext? context;
+            ID2D1Image? input;
+            lock (deferredLock)
+            {
+                context = deferredContext;
+                input = deferredInput;
+                deferredContext = null;
+                deferredInput = null;
+            }
+            if (disposeRequested || context == null || input == null)
+            {
+                input?.Dispose();
+                return;
+            }
+
+            try
+            {
+                Render(context, input, deferredFrame, deferredInterpolationMode);
+            }
+            finally
+            {
+                input.Dispose();
+            }
+        }
+
+        private void ReleaseDeferred()
+        {
+            ID2D1Image? input;
+            lock (deferredLock)
+            {
+                input = deferredInput;
+                deferredInput = null;
+                deferredContext = null;
+            }
+            input?.Dispose();
+        }
+
+        private bool Render(ID2D1DeviceContext context, ID2D1Image input, int frame, InterpolationMode interpolationMode)
+        {
+            var currentWorld = world;
+            var currentTrack = track;
+            if (currentWorld == null || currentTrack == null || !currentWorld.TryGetResult(currentTrack, frame, result))
+            {
+                SetOutput(context, input);
+                hasOutput = false;
+                return false;
+            }
+
+            SetOutput(context, Compose(context, input, interpolationMode));
+            hasOutput = true;
+            return true;
+        }
+
+        private void SetOutput(ID2D1DeviceContext context, ID2D1Image image)
+        {
+            if (outputEffect == null)
+            {
+                outputEffect = new Vortice.Direct2D1.Effects.Crop(context);
+                output = outputEffect.Output;
+            }
+            outputEffect.SetInput(0, image, true);
+        }
+
+        private (PhysicsWorld World, BodyTrack Track) EnsureTrack(ControllerInput data)
+        {
+            var newWorldKey = (data.SceneId, data.WorldId);
+            var newTrackIndex = (data.GroupIndex, data.InputIndex);
+
+            if (world != null && track != null && worldKey == newWorldKey && trackIndex == newTrackIndex)
+            {
+                return (world, track);
+            }
+
+            if (world != null && track != null)
+            {
+                world.Detach(track, this, remove: worldKey != newWorldKey);
+            }
+
+            var (newWorld, newTrack) = PhysicsManager.Attach(data.SceneId, data.WorldId, new TrackKey(owner, data.GroupIndex, data.InputIndex), this);
+            world = newWorld;
+            track = newTrack;
+            worldKey = newWorldKey;
+            trackIndex = newTrackIndex;
+            shapeDirty = true;
+
+            return (newWorld, newTrack);
+        }
+
+        private ShapeVersion? CaptureShape(ID2D1DeviceContext context, ID2D1Image input, ControllerInput data, PhysicsWorld currentWorld, BodyTrack currentTrack, out bool replaced)
+        {
+            replaced = false;
+
+            bool everyFrame = data.ShapeUpdateMode == ShapeUpdateMode.EveryFrame;
+            bool hasShape = currentWorld.HasShape(currentTrack);
+            if (!everyFrame && !data.IsPaused && hasShape && !shapeDirty && data.LocalFrame != 0) return null;
+
+            var bounds = context.GetImageLocalBounds(input);
+            bool inputChanged = !ReferenceEquals(input, lastInput);
+            bool boundsChanged = !bounds.Equals(lastBounds);
+
+            bool needed = shapeDirty
+                || inputChanged
+                || boundsChanged
+                || data.LocalFrame == 0
+                || !hasShape
+                || (everyFrame && !IsInputCacheable(input));
+            if (!needed) return null;
+
+            replaced = shapeDirty || (data.IsPaused && (inputChanged || boundsChanged));
+
+            lastInput = input;
+            lastBounds = bounds;
+            shapeDirty = false;
+
+            if (!reader.Read(context, input, AlphaThreshold)) return ShapeVersion.Empty;
+
+            ulong hash = reader.Hash ^ ((ulong)BitConverter.SingleToUInt32Bits(data.SimplifyTolerance) * 0xC2B2AE3D27D4EB4FUL);
+
+            return currentWorld.FindShape(currentTrack, hash)
+                ?? ShapeAnalyzer.Analyze(reader.Mask, reader.Width, reader.Height, reader.Origin, reader.PixelSize, data.SimplifyTolerance, hash);
+        }
+
+        private ID2D1Image Compose(ID2D1DeviceContext context, ID2D1Image input, InterpolationMode interpolationMode)
+        {
+            if (result.FluidShape != null)
+            {
+                DrawFluid(context, input, interpolationMode, fluidSmoothness);
+                return commandList!;
+            }
+
+
+            if (result.IsSeparate || result.Poses.Count != 1 || result.JointLines.Count > 0 || result.Poses[0].Opacity < 1f)
+            {
+                Draw(context, input, interpolationMode);
+                return commandList!;
+            }
+
+            if (poseEffect == null)
+            {
+                poseEffect = new Vortice.Direct2D1.Effects.AffineTransform2D(context);
+                poseOutput = poseEffect.Output;
+            }
+
+            poseEffect.SetInput(0, input, true);
+            poseEffect.TransformMatrix = GetPoseTransform(0);
+            poseEffect.InterPolationMode = (AffineTransform2DInterpolationMode)interpolationMode;
+            return poseOutput!;
+        }
+
+        private Matrix3x2 GetPoseTransform(int index)
+        {
+            var pose = result.Poses[index];
+            return result.ImageTransform
+                * Matrix3x2.CreateTranslation(-result.LocalCentroids[index])
+                * Matrix3x2.CreateRotation(pose.Rotation)
+                * Matrix3x2.CreateTranslation(pose.Position);
+        }
+
+        private void Draw(ID2D1DeviceContext context, ID2D1Image input, InterpolationMode interpolationMode)
+        {
+            commandList?.Dispose();
+            commandList = context.CreateCommandList();
+
+            bool useAtlas = false;
+            using var realizer = result.IsSeparate ? context.QueryInterfaceOrNull<ID2D1DeviceContext1>() : null;
+            if (result.IsSeparate)
+            {
+                EnsureMasks(context, result.Shape);
+                useAtlas = IsInputCacheable(input) && EnsureAtlas(context, input, result.Shape);
+                if (!useAtlas)
                 {
-                    sink.BeginFigure(poly.LocalVertices[0], FigureBegin.Filled);
-                    for (int i = 1; i < poly.LocalVertices.Length; i++)
+                    EnsureBrush(context, input, interpolationMode);
+                    if (realizer != null) EnsureMaskRealizations(realizer, MathF.Sqrt(MathF.Abs(result.ImageTransform.GetDeterminant())));
+                }
+            }
+
+            using (var oldTarget = context.Target)
+            {
+                var oldTransform = context.Transform;
+                context.Target = commandList;
+                try
+                {
+                    context.BeginDraw();
+                    try
                     {
-                        sink.AddLine(poly.LocalVertices[i]);
+                        DrawJointLines(context);
+
+                        for (int i = 0; i < result.Poses.Count; i++)
+                        {
+                            var pose = result.Poses[i];
+                            if (pose.Opacity <= 0f) continue;
+                            if (result.IsSeparate && i >= masks.Length) break;
+
+                            bool faded = pose.Opacity < 1f;
+                            if (faded)
+                            {
+                                context.Transform = Matrix3x2.Identity;
+                                context.PushLayer(new LayerParameters1
+                                {
+                                    ContentBounds = new RawRectF(float.MinValue, float.MinValue, float.MaxValue, float.MaxValue),
+                                    MaskTransform = Matrix3x2.Identity,
+                                    MaskAntialiasMode = AntialiasMode.PerPrimitive,
+                                    Opacity = pose.Opacity,
+                                    LayerOptions = LayerOptions1.None,
+                                }, null!);
+                            }
+
+                            context.Transform = GetPoseTransform(i);
+
+                            if (!result.IsSeparate)
+                            {
+                                context.DrawImage(input, interpolationMode, CompositeMode.SourceOver);
+                                if (faded) context.PopLayer();
+                                continue;
+                            }
+
+                            if (masks[i] is { } mask)
+                            {
+                                var bounds = partBounds[i];
+                                if (useAtlas)
+                                {
+                                    context.Transform = Matrix3x2.CreateTranslation(bounds.Left, bounds.Top) * context.Transform;
+                                    context.DrawImage(atlas!, null, atlasCells[i], interpolationMode, CompositeMode.SourceOver);
+                                }
+                                else
+                                {
+                                    brush!.SourceRectangle = bounds;
+                                    brush.Transform = Matrix3x2.CreateTranslation(bounds.Left, bounds.Top);
+                                    if (realizer != null && i < maskRealizations.Length && maskRealizations[i] is { } realization)
+                                    {
+                                        realizer.DrawGeometryRealization(realization, brush);
+                                    }
+                                    else
+                                    {
+                                        context.FillGeometry(mask, brush);
+                                    }
+                                }
+                            }
+
+                            if (faded) context.PopLayer();
+                        }
                     }
-                    sink.EndFigure(FigureEnd.Closed);
-                    hasFigure = true;
+                    finally
+                    {
+                        context.EndDraw();
+                    }
                 }
-                else if (col is CircleCollider circle)
+                finally
                 {
-                    Vector2 center = circle.Offset;
-                    float r = circle.Radius;
-
-                    Vector2 start = new(center.X + r, center.Y);
-                    Vector2 end = new(center.X - r, center.Y);
-
-                    sink.BeginFigure(start, FigureBegin.Filled);
-                    sink.AddArc(new ArcSegment(end, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
-                    sink.AddArc(new ArcSegment(start, new Size(r, r), 0, SweepDirection.Clockwise, ArcSize.Small));
-                    sink.EndFigure(FigureEnd.Closed);
-                    hasFigure = true;
+                    context.Target = oldTarget;
+                    context.Transform = oldTransform;
                 }
             }
-            sink.Close();
 
-            if (!hasFigure)
-            {
-                pathGeometry.Dispose();
-                return null;
-            }
-
-            return pathGeometry;
+            commandList.Close();
         }
 
-        private void RebuildBodies(ID2D1DeviceContext context, ID2D1Image input, Vector2 zoom, float simplifyTolerance, byte alphaThreshold, bool separateParts)
+        private void DrawJointLines(ID2D1DeviceContext context)
         {
-            var rect = context.GetImageLocalBounds(input);
-            var topLeft = new Vector2(rect.Left, rect.Top);
+            if (result.JointLines.Count == 0) return;
 
-            PhysicsManager.Atomic(_worldId, (world) =>
+            context.Transform = Matrix3x2.Identity;
+
+            if (lineStrokeStyle == null)
             {
-                ClearBodies(world);
-
-                var partsVertices = ColliderGenerator.GetVerticesFromImage(
-                    context,
-                    input,
-                    topLeft,
-                    zoom,
-                    alphaThreshold,
-                    simplifyTolerance
-                );
-
-                var newBodies = BodyFactory.CreateBodies(
-                    partsVertices,
-                    Vector2.Zero,
-                    _currentMass,
-                    separateParts,
-                    _currentBodyType
-                );
-
-                foreach (var body in newBodies)
+                using var factory = context.Factory;
+                lineStrokeStyle = factory.CreateStrokeStyle(new StrokeStyleProperties
                 {
-                    SetupNewBody(body, topLeft);
-                    _bodies.Add(body);
-                    world.AddBody(body);
+                    StartCap = CapStyle.Round,
+                    EndCap = CapStyle.Round,
+                    LineJoin = LineJoin.Round,
+                });
+            }
+
+            foreach (var line in result.JointLines)
+            {
+                if (!lineBrushes.TryGetValue(line.Color, out var brush))
+                {
+                    var color = new Vortice.Mathematics.Color4(
+                        ((line.Color >> 16) & 0xFF) / 255f,
+                        ((line.Color >> 8) & 0xFF) / 255f,
+                        (line.Color & 0xFF) / 255f,
+                        ((line.Color >> 24) & 0xFF) / 255f);
+                    brush = context.CreateSolidColorBrush(color);
+                    lineBrushes[line.Color] = brush;
                 }
+
+                context.DrawLine(line.Start, line.End, brush, line.Width, lineStrokeStyle);
+            }
+        }
+
+        private void EnsureMasks(ID2D1DeviceContext context, ShapeVersion shape)
+        {
+            if (ReferenceEquals(maskShape, shape)) return;
+
+            DisposeMasks();
+
+            using var factory = context.Factory;
+            masks = new ID2D1Geometry?[shape.Components.Length];
+            partBounds = new RawRectF[shape.Components.Length];
+            for (int i = 0; i < masks.Length; i++)
+            {
+                masks[i] = CreateMask(factory, shape.Components[i]);
+                partBounds[i] = GetBounds(shape.Components[i]);
+            }
+            maskShape = shape;
+        }
+
+        private static RawRectF GetBounds(ShapeComponent component)
+        {
+            Vector2 min = new(float.MaxValue);
+            Vector2 max = new(float.MinValue);
+            foreach (var loop in component.Outline)
+            {
+                foreach (var point in loop)
+                {
+                    min = Vector2.Min(min, point);
+                    max = Vector2.Max(max, point);
+                }
+            }
+
+            float margin = MaskMargin + 1f;
+            return new RawRectF(MathF.Floor(min.X - margin), MathF.Floor(min.Y - margin), MathF.Ceiling(max.X + margin), MathF.Ceiling(max.Y + margin));
+        }
+
+        private bool IsInputCacheable(ID2D1Image input)
+        {
+            if (!ReferenceEquals(cacheCheckedInput, input))
+            {
+                using var commandListInput = input.QueryInterfaceOrNull<ID2D1CommandList>();
+                isInputCacheable = commandListInput != null;
+                cacheCheckedInput = input;
+            }
+            return isInputCacheable;
+        }
+
+        private void EnsureBrush(ID2D1DeviceContext context, ID2D1Image input, InterpolationMode interpolationMode)
+        {
+            if (brush != null && ReferenceEquals(brushInput, input) && brushInterpolationMode == interpolationMode) return;
+
+            brush?.Dispose();
+            brush = context.CreateImageBrush(input, new ImageBrushProperties
+            {
+                SourceRectangle = new RawRectF(0, 0, 1, 1),
+                ExtendModeX = ExtendMode.Clamp,
+                ExtendModeY = ExtendMode.Clamp,
+                InterpolationMode = interpolationMode,
             });
+            brushInput = input;
+            brushInterpolationMode = interpolationMode;
         }
 
-        private void SetupNewBody(RigidBody body, Vector2 topLeft)
+        private bool EnsureAtlas(ID2D1DeviceContext context, ID2D1Image input, ShapeVersion shape)
         {
-            Vector2 localCenter = body.VisualOffset + topLeft;
-            Vector2 worldOffset = Vector2.Transform(localCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
-
-            body.Position = _currentDrawPosition + worldOffset;
-            body.Rotation = _currentDrawRotation;
-
-            Vector2 capturedLocalCenter = localCenter;
-
-            body.OnReset = () =>
+            if (ReferenceEquals(atlasShape, shape) && ReferenceEquals(atlasInput, input))
             {
-                Vector2 currentWorldOffset = Vector2.Transform(capturedLocalCenter, Matrix3x2.CreateRotation(_currentDrawRotation));
-
-                body.Position = _currentDrawPosition + currentWorldOffset;
-                body.Rotation = _currentDrawRotation;
-                body.LinearVelocity = Vector2.Zero;
-                body.AngularVelocity = 0f;
-                body.ClearForces();
-            };
-        }
-
-        private void ClearBodies(PhysicsWorld world)
-        {
-            foreach (var oldBody in _bodies)
-            {
-                PhysicsManager.LeaveWorld(_worldId, oldBody);
-                world.RemoveBody(oldBody);
+                return atlas != null && !atlasUnavailable;
             }
-            _bodies.Clear();
 
-            foreach (var geo in _geometryCache.Values)
-            {
-                geo.Dispose();
-            }
-            _geometryCache.Clear();
-        }
+            atlas?.Dispose();
+            atlas = null;
+            atlasShape = shape;
+            atlasInput = input;
+            atlasUnavailable = true;
 
-        public void SetWorld(int worldId, WorldConfig? config)
-        {
-            if (_worldId != worldId)
+            var cells = new RawRectF[partBounds.Length];
+            int x = 0, y = 0, rowHeight = 0;
+            for (int i = 0; i < partBounds.Length; i++)
             {
-                if (_worldId != -1)
+                int width = (int)(partBounds[i].Right - partBounds[i].Left);
+                int height = (int)(partBounds[i].Bottom - partBounds[i].Top);
+                if (width > AtlasWidth) return false;
+
+                if (x + width > AtlasWidth)
                 {
-                    foreach (var body in _bodies)
+                    x = 0;
+                    y += rowHeight + AtlasPadding;
+                    rowHeight = 0;
+                }
+
+                cells[i] = new RawRectF(x, y, x + width, y + height);
+                x += width + AtlasPadding;
+                rowHeight = Math.Max(rowHeight, height);
+            }
+
+            int atlasHeight = y + rowHeight;
+            if (cells.Length == 0 || atlasHeight <= 0 || atlasHeight > AtlasMaxHeight) return false;
+
+            int atlasWidth = Math.Min(AtlasWidth, (int)cells.Max(c => c.Right));
+            var format = new Vortice.DCommon.PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied);
+            atlas = context.CreateBitmap(new Vortice.Mathematics.SizeI(atlasWidth, atlasHeight), new BitmapProperties1(format, 96f, 96f, BitmapOptions.Target));
+            atlasCells = cells;
+
+            EnsureBrush(context, input, InterpolationMode.NearestNeighbor);
+
+            using (var oldTarget = context.Target)
+            {
+                var oldTransform = context.Transform;
+                context.Target = atlas;
+                try
+                {
+                    context.BeginDraw();
+                    try
                     {
-                        PhysicsManager.LeaveWorld(_worldId, body);
+                        context.Clear(new Vortice.Mathematics.Color4(0, 0, 0, 0));
+                        for (int i = 0; i < cells.Length; i++)
+                        {
+                            var mask = masks[i];
+                            if (mask == null) continue;
+
+                            var bounds = partBounds[i];
+                            context.Transform = Matrix3x2.CreateTranslation(cells[i].Left - bounds.Left, cells[i].Top - bounds.Top);
+                            brush!.SourceRectangle = bounds;
+                            brush.Transform = Matrix3x2.CreateTranslation(bounds.Left, bounds.Top);
+                            context.FillGeometry(mask, brush);
+                        }
+                    }
+                    finally
+                    {
+                        context.EndDraw();
                     }
                 }
-
-                JoinWorld(worldId, config);
-                foreach (var b in _bodies)
+                finally
                 {
-                    var w = PhysicsManager.JoinWorld(worldId, config ?? new WorldConfig { Id = worldId });
-                    w.AddBody(b);
+                    context.Target = oldTarget;
+                    context.Transform = oldTransform;
                 }
-
-                _isInitialized = false;
             }
+
+            atlasUnavailable = false;
+            return true;
         }
 
-        private void JoinWorld(int worldId, WorldConfig? config)
+        private static ID2D1Geometry? CreateMask(ID2D1Factory factory, ShapeComponent component)
         {
-            _worldId = worldId;
-            PhysicsManager.JoinWorld(worldId, config ?? new WorldConfig { Id = worldId });
+            var loops = component.Outline.Where(loop => loop.Length >= 3).ToArray();
+            if (loops.Length == 0) return null;
+
+            using var fill = factory.CreatePathGeometry();
+            using (var sink = fill.Open())
+            {
+                sink.SetFillMode(FillMode.Alternate);
+                foreach (var loop in loops)
+                {
+                    sink.BeginFigure(loop[0], FigureBegin.Filled);
+                    sink.AddLines(loop[1..]);
+                    sink.EndFigure(FigureEnd.Closed);
+                }
+                sink.Close();
+            }
+
+            using var widened = factory.CreatePathGeometry();
+            using (var sink = widened.Open())
+            {
+                fill.Widen(MaskMargin * 2f, sink);
+                sink.Close();
+            }
+
+            var mask = factory.CreatePathGeometry();
+            using (var sink = mask.Open())
+            {
+                fill.CombineWithGeometry(widened, CombineMode.Union, sink);
+                sink.Close();
+            }
+
+            return mask;
+        }
+
+        private void EnsureMaskRealizations(ID2D1DeviceContext1 context, float scale)
+        {
+            scale = MathF.Max(scale, 1e-3f);
+            if (maskRealizations.Length == masks.Length && maskRealizationScale > 0f && MathF.Abs(scale / maskRealizationScale - 1f) < 0.25f) return;
+
+            DisposeMaskRealizations();
+            maskRealizations = new ID2D1GeometryRealization?[masks.Length];
+            for (int i = 0; i < masks.Length; i++)
+            {
+                if (masks[i] is { } mask) maskRealizations[i] = context.CreateFilledGeometryRealization(mask, 0.25f / scale);
+            }
+            maskRealizationScale = scale;
+        }
+
+        private void DisposeMaskRealizations()
+        {
+            foreach (var realization in maskRealizations) realization?.Dispose();
+            maskRealizations = [];
+            maskRealizationScale = 0f;
+        }
+
+        private void DisposeMasks()
+        {
+            DisposeMaskRealizations();
+            foreach (var mask in masks) mask?.Dispose();
+            masks = [];
+            maskShape = null;
         }
 
         public void Dispose()
         {
-            Dispose(true);
-            GC.SuppressFinalize(this);
+            disposeRequested = true;
+            TryDisposePending();
         }
 
-        protected virtual void Dispose(bool disposing)
+        private void TryDisposePending()
         {
-            if (_disposed) return;
-
-            if (disposing)
+            if (!disposeRequested || disposed || !gate.TryEnter()) return;
+            try
             {
-                if (_worldId != -1)
-                {
-                    foreach (var body in _bodies)
-                    {
-                        PhysicsManager.LeaveWorld(_worldId, body);
-                    }
-                    _worldId = -1;
-                }
-
-                foreach (var geo in _geometryCache.Values)
-                {
-                    geo.Dispose();
-                }
-                _geometryCache.Clear();
+                DisposeCore();
             }
-            _disposed = true;
+            finally
+            {
+                gate.Exit();
+            }
+        }
+
+        private void DisposeCore()
+        {
+            if (disposed) return;
+            disposed = true;
+
+            if (world != null && track != null)
+            {
+                world.Detach(track, this, remove: false);
+            }
+            world = null;
+            track = null;
+
+            DisposeMasks();
+            DisposeFluid();
+            atlas?.Dispose();
+            atlas = null;
+            brush?.Dispose();
+            brush = null;
+            lineStrokeStyle?.Dispose();
+            lineStrokeStyle = null;
+            foreach (var lineBrush in lineBrushes.Values) lineBrush.Dispose();
+            lineBrushes.Clear();
+            reader.Dispose();
+
+            deferredControllers?.Remove(this);
+            ReleaseDeferred();
+
+            poseOutput?.Dispose();
+            poseOutput = null;
+            poseEffect?.Dispose();
+            poseEffect = null;
+            output?.Dispose();
+            output = null;
+            outputEffect?.Dispose();
+            outputEffect = null;
+
+            commandList?.Dispose();
+            commandList = null;
         }
     }
 }
